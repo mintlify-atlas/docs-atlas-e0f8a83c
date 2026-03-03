@@ -1,0 +1,141 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Spring Boot Redis Rate Limiter",
+  "projectDescription": "A lightweight Spring Boot starter for annotation-driven rate limiting backed by Redis",
+  "theme": "palm",
+  "primaryColor": "#DC382D",
+  "lightColor": "#FF6B6B",
+  "darkColor": "#A71E17",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/rate-limiting",
+              "concepts/key-resolution",
+              "concepts/fail-open-closed"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/basic-usage",
+              "guides/custom-key-resolver",
+              "guides/custom-policy-provider",
+              "guides/metrics",
+              "guides/http-responses",
+              "guides/testing"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/properties",
+              "configuration/redis-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Annotations",
+            "pages": [
+              "api/annotations/rate-limit"
+            ]
+          },
+          {
+            "group": "Core Interfaces",
+            "pages": [
+              "api/core/rate-limiter",
+              "api/core/rate-limit-enforcer",
+              "api/core/rate-limit-policy-provider"
+            ]
+          },
+          {
+            "group": "Key Resolution",
+            "pages": [
+              "api/key/rate-limit-key-resolver",
+              "api/key/default-rate-limit-key-resolver"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "api/models/rate-limit-policy",
+              "api/models/rate-limit-decision",
+              "api/models/rate-limit-scope"
+            ]
+          },
+          {
+            "group": "Exceptions",
+            "pages": [
+              "api/exceptions/rate-limit-exceeded",
+              "api/exceptions/rate-limiter-backend"
+            ]
+          },
+          {
+            "group": "Metrics",
+            "pages": [
+              "api/metrics/rate-limit-metrics-recorder"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Resources",
+            "pages": [
+              "resources/examples",
+              "resources/troubleshooting",
+              "resources/faq",
+              "resources/changelog",
+              "resources/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "@RateLimit annotation for method and class-level throttling",
+    "Redis fixed-window implementation using INCR + TTL",
+    "Automatic Spring Boot 3.x auto-configuration",
+    "HTTP 429 mapping with Retry-After and RateLimit-* headers",
+    "Pluggable key resolution and policy strategies",
+    "Configurable fail-open or fail-closed backend behavior",
+    "Micrometer metrics support for monitoring"
+  ],
+  "publicApiSurface": [
+    "@RateLimit",
+    "RateLimiter",
+    "RateLimitKeyResolver",
+    "RateLimitPolicyProvider",
+    "RateLimitEnforcer",
+    "RateLimitPolicy",
+    "RateLimitDecision",
+    "RateLimitContext",
+    "RateLimitScope",
+    "RateLimitExceededException",
+    "RateLimiterBackendException",
+    "RateLimitMetricsRecorder",
+    "DefaultRateLimitKeyResolver",
+    "RedisRateLimiter",
+    "RateLimiterProperties"
+  ]
+}
