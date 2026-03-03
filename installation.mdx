@@ -1,0 +1,226 @@
+---
+title: Installation
+description: Add the Spring Boot Redis Rate Limiter starter to your project
+---
+
+# Installation
+
+Add the Spring Boot Redis Rate Limiter starter to your Maven or Gradle project. The starter includes auto-configuration that works out of the box with Spring Boot 3.x.
+
+## Requirements
+
+Before installing, ensure your project meets these requirements:
+
+<CardGroup cols={3}>
+  <Card title="Java 17+" icon="mug-hot">
+    Java 17 or higher is required
+  </Card>
+  <Card title="Spring Boot 3.x" icon="leaf">
+    Spring Boot 3.4.5 or compatible version
+  </Card>
+  <Card title="Redis" icon="database">
+    Redis instance accessible to your application
+  </Card>
+</CardGroup>
+
+## Add the dependency
+
+Choose your build tool and add the appropriate dependency:
+
+<CodeGroup>
+
+```xml Maven
+<dependency>
+  <groupId>io.github.v4run-sharma</groupId>
+  <artifactId>spring-boot-starter-redis-ratelimiter</artifactId>
+  <version>1.0.1</version>
+</dependency>
+```
+
+```gradle Gradle (Groovy)
+implementation 'io.github.v4run-sharma:spring-boot-starter-redis-ratelimiter:1.0.1'
+```
+
+```kotlin Gradle (Kotlin DSL)
+implementation("io.github.v4run-sharma:spring-boot-starter-redis-ratelimiter:1.0.1")
+```
+
+</CodeGroup>
+
+<Info>
+The starter uses Spring Boot's dependency management, so you don't need to specify versions for transitive dependencies like Spring Data Redis or Lettuce.
+</Info>
+
+## Configure Redis connection
+
+The starter requires a Redis connection. Configure it using standard Spring Boot Redis properties:
+
+<CodeGroup>
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+```
+
+```properties application.properties
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+```
+
+</CodeGroup>
+
+### Redis with authentication
+
+If your Redis instance requires authentication:
+
+<CodeGroup>
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: redis.example.com
+      port: 6379
+      password: your-redis-password
+      ssl:
+        enabled: true
+```
+
+```properties application.properties
+spring.data.redis.host=redis.example.com
+spring.data.redis.port=6379
+spring.data.redis.password=your-redis-password
+spring.data.redis.ssl.enabled=true
+```
+
+</CodeGroup>
+
+### Redis Cluster or Sentinel
+
+For Redis Cluster or Sentinel configurations, use the standard Spring Data Redis cluster or sentinel properties:
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      cluster:
+        nodes:
+          - redis-node-1:6379
+          - redis-node-2:6379
+          - redis-node-3:6379
+```
+
+## Run Redis locally with Docker
+
+For local development, you can quickly start a Redis instance using Docker:
+
+```bash Terminal
+docker run --name redis-ratelimiter -p 6379:6379 -d redis:7-alpine
+```
+
+This command starts Redis 7 in Alpine Linux, exposing it on port 6379.
+
+<Tip>
+For production environments, consider using managed Redis services like AWS ElastiCache, Azure Cache for Redis, or Google Cloud Memorystore.
+</Tip>
+
+## Optional configuration
+
+The starter provides several configuration properties to customize behavior. All properties are optional and have sensible defaults:
+
+<CodeGroup>
+
+```yaml application.yml
+ratelimiter:
+  enabled: true
+  redis-key-prefix: ratelimiter
+  fail-open: false
+  include-http-headers: true
+  metrics-enabled: true
+```
+
+```properties application.properties
+ratelimiter.enabled=true
+ratelimiter.redis-key-prefix=ratelimiter
+ratelimiter.fail-open=false
+ratelimiter.include-http-headers=true
+ratelimiter.metrics-enabled=true
+```
+
+</CodeGroup>
+
+### Configuration properties reference
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ratelimiter.enabled` | boolean | `true` | Master switch to enable or disable the rate limiter auto-configuration |
+| `ratelimiter.redis-key-prefix` | string | `ratelimiter` | Prefix used for all Redis bucket keys |
+| `ratelimiter.fail-open` | boolean | `false` | When `true`, allows requests if Redis is unavailable (fail-open). When `false`, rejects requests if Redis is unavailable (fail-closed) |
+| `ratelimiter.include-http-headers` | boolean | `true` | When `true`, includes `Retry-After` and `RateLimit-*` headers in HTTP 429 responses |
+| `ratelimiter.metrics-enabled` | boolean | `true` | When `true`, records Micrometer metrics for rate limiter operations |
+
+<Warning>
+Setting `fail-open=true` means requests will be allowed when Redis is unavailable. This can be useful for resilience but removes rate limiting protection during Redis outages. Use with caution in production.
+</Warning>
+
+## Verify installation
+
+After adding the dependency and configuring Redis, start your Spring Boot application. You should see log messages indicating the rate limiter auto-configuration has activated:
+
+```text Console output
+INFO  RateLimiterAutoConfiguration - Rate limiter starter auto-configuration enabled
+```
+
+<Steps>
+
+<Step title="Check Redis connectivity">
+Ensure your application can connect to Redis. Check the logs for any connection errors.
+</Step>
+
+<Step title="Add a test annotation">
+Add `@RateLimit` to a test controller or service method to verify the starter is working.
+</Step>
+
+<Step title="Test the rate limit">
+Make multiple requests to the annotated endpoint and verify you receive HTTP 429 responses when the limit is exceeded.
+</Step>
+
+</Steps>
+
+## Dependency tree
+
+The starter includes these main dependencies:
+
+- `spring-boot-autoconfigure` - Auto-configuration support
+- `spring-context` - Spring IoC container
+- `spring-aop` - AOP interceptor support
+- `spring-web` - HTTP exception handling
+- `spring-data-redis` - Redis operations
+- `lettuce-core` - Redis client
+- `micrometer-core` - Metrics recording
+
+<Info>
+All dependencies are included automatically when you add the starter. You don't need to add them individually.
+</Info>
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Follow the step-by-step guide to implement rate limiting in your application
+  </Card>
+  <Card
+    title="Back to introduction"
+    icon="arrow-left"
+    href="/introduction"
+  >
+    Return to the introduction page
+  </Card>
+</CardGroup>

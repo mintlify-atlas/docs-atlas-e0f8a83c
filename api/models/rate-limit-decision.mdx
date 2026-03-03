@@ -1,0 +1,338 @@
+---
+title: RateLimitDecision
+description: Result model for rate limit evaluations
+---
+
+## Overview
+
+The `RateLimitDecision` class represents the result of a single rate limit evaluation. It indicates whether a request is allowed and provides retry timing information.
+
+**Package:** `io.github.v4runsharma.ratelimiter.model`
+
+**Source:** `RateLimitDecision.java:8`
+
+## Constants
+
+### REMAINING_TIME_UNKNOWN
+
+```java
+public static final long REMAINING_TIME_UNKNOWN = -1L
+```
+
+Marker value indicating that remaining time information is unavailable.
+
+**Source:** `RateLimitDecision.java:13`
+
+## Constructor
+
+```java
+public RateLimitDecision(
+    boolean isAllowed,
+    long remainingTime,
+    Duration retryAfter,
+    Duration resetAfter
+)
+```
+
+Creates a new rate limit decision.
+
+<ParamField path="isAllowed" type="boolean" required>
+  Whether the request is allowed.
+</ParamField>
+
+<ParamField path="remainingTime" type="long" required>
+  Time until the next allowed request in milliseconds. Must be ≥ `REMAINING_TIME_UNKNOWN` (-1).
+</ParamField>
+
+<ParamField path="retryAfter" type="Duration">
+  Optional duration until the next allowed request. Can be null. Must not be negative if provided.
+</ParamField>
+
+<ParamField path="resetAfter" type="Duration">
+  Optional duration until the rate limit resets. Can be null. Must not be negative if provided.
+</ParamField>
+
+**Throws:** `IllegalArgumentException` if:
+- `remainingTime < REMAINING_TIME_UNKNOWN`
+- `retryAfter` is negative
+- `resetAfter` is negative
+
+**Source:** `RateLimitDecision.java:20-35`
+
+## Properties
+
+### isAllowed
+
+```java
+public boolean isAllowed()
+```
+
+<ResponseField name="return" type="boolean">
+  `true` if the request is allowed, `false` if rate limit is exceeded.
+</ResponseField>
+
+**Source:** `RateLimitDecision.java:37-39`
+
+### getRemainingTime
+
+```java
+public long getRemainingTime()
+```
+
+Returns milliseconds the caller should wait before retrying.
+
+<ResponseField name="return" type="long">
+  - `0` when allowed
+  - `REMAINING_TIME_UNKNOWN` (-1) when unavailable
+  - Positive value indicating milliseconds to wait when denied
+</ResponseField>
+
+**Source:** `RateLimitDecision.java:45-47`
+
+### getRetryAfterMillis
+
+```java
+public long getRetryAfterMillis()
+```
+
+Alias of `getRemainingTime()` for clearer HTTP/retry semantics.
+
+<ResponseField name="return" type="long">
+  Same as `getRemainingTime()` - milliseconds until retry is allowed.
+</ResponseField>
+
+**Source:** `RateLimitDecision.java:52-54`
+
+### getRetryAfter
+
+```java
+public Optional<Duration> getRetryAfter()
+```
+
+<ResponseField name="return" type="Optional<Duration>">
+  Optional duration until the next allowed request. Empty if not available.
+</ResponseField>
+
+**Source:** `RateLimitDecision.java:56-58`
+
+### getResetAfter
+
+```java
+public Optional<Duration> getResetAfter()
+```
+
+<ResponseField name="return" type="Optional<Duration>">
+  Optional duration until the rate limit counter resets. Empty if not available.
+</ResponseField>
+
+**Source:** `RateLimitDecision.java:60-62`
+
+## Usage examples
+
+### Creating decisions
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+// Request allowed
+RateLimitDecision allowed = new RateLimitDecision(
+    true,  // allowed
+    0,     // no wait time
+    null,  // no retry duration
+    null   // no reset duration
+);
+
+// Request denied - retry after 30 seconds
+RateLimitDecision denied = new RateLimitDecision(
+    false,                      // not allowed
+    30000,                      // 30 seconds in millis
+    Duration.ofSeconds(30),     // retry duration
+    Duration.ofMinutes(1)       // reset duration
+);
+
+// Unknown retry time
+RateLimitDecision unknown = new RateLimitDecision(
+    false,
+    RateLimitDecision.REMAINING_TIME_UNKNOWN,
+    null,
+    null
+);
+```
+
+### Checking decision
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+
+public class RequestHandler {
+    
+    private final RateLimiter rateLimiter;
+    
+    public void handleRequest(String userId) {
+        RateLimitPolicy policy = createPolicy();
+        RateLimitDecision decision = rateLimiter.evaluate(
+            "user:" + userId, 
+            policy
+        );
+        
+        if (decision.isAllowed()) {
+            // Process the request
+            processRequest();
+        } else {
+            // Handle rate limit
+            long retryAfterMs = decision.getRetryAfterMillis();
+            System.out.println("Rate limited. Retry after " 
+                + retryAfterMs + "ms");
+        }
+    }
+}
+```
+
+### Using retry information
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+public class RetryHandler {
+    
+    public void handleDecision(RateLimitDecision decision) {
+        if (!decision.isAllowed()) {
+            // Get retry information
+            long millisToWait = decision.getRetryAfterMillis();
+            
+            decision.getRetryAfter().ifPresent(duration -> {
+                System.out.println("Retry after: " + duration);
+            });
+            
+            decision.getResetAfter().ifPresent(duration -> {
+                System.out.println("Rate limit resets in: " + duration);
+            });
+            
+            // Schedule retry
+            if (millisToWait > 0 && 
+                millisToWait != RateLimitDecision.REMAINING_TIME_UNKNOWN) {
+                scheduleRetry(millisToWait);
+            }
+        }
+    }
+    
+    private void scheduleRetry(long delayMs) {
+        // Schedule retry logic
+    }
+}
+```
+
+### HTTP response headers
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import jakarta.servlet.http.HttpServletResponse;
+
+public class RateLimitFilter {
+    
+    public void applyHeaders(
+        HttpServletResponse response, 
+        RateLimitDecision decision
+    ) {
+        if (!decision.isAllowed()) {
+            // Set 429 Too Many Requests
+            response.setStatus(429);
+            
+            // Add Retry-After header (in seconds)
+            long retrySeconds = decision.getRetryAfterMillis() / 1000;
+            if (retrySeconds > 0) {
+                response.setHeader(
+                    "Retry-After", 
+                    String.valueOf(retrySeconds)
+                );
+            }
+            
+            // Add custom header with milliseconds
+            decision.getRetryAfter().ifPresent(duration -> {
+                response.setHeader(
+                    "X-RateLimit-Retry-After-Ms",
+                    String.valueOf(duration.toMillis())
+                );
+            });
+            
+            // Add reset time header
+            decision.getResetAfter().ifPresent(duration -> {
+                response.setHeader(
+                    "X-RateLimit-Reset",
+                    String.valueOf(System.currentTimeMillis() 
+                        + duration.toMillis())
+                );
+            });
+        }
+    }
+}
+```
+
+### Logging decisions
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class DecisionLogger {
+    
+    private static final Logger log = LoggerFactory.getLogger(DecisionLogger.class);
+    
+    public void logDecision(String key, RateLimitDecision decision) {
+        if (decision.isAllowed()) {
+            log.debug("Rate limit check passed for key: {}", key);
+        } else {
+            log.warn("Rate limit exceeded for key: {}. {}", key, decision);
+            
+            decision.getRetryAfter().ifPresent(duration -> 
+                log.info("Retry allowed after: {}", duration)
+            );
+        }
+    }
+}
+```
+
+## String representation
+
+```java
+RateLimitDecision decision = new RateLimitDecision(
+    false,
+    30000,
+    Duration.ofSeconds(30),
+    Duration.ofMinutes(1)
+);
+
+System.out.println(decision);
+// Output: RateLimitDecision{allowed=false, remaining=30000, retryAfter=PT30S, resetAfter=PT1M}
+```
+
+**Source:** `RateLimitDecision.java:81-88`
+
+## Equality and hashing
+
+Decisions are compared based on all fields:
+
+```java
+RateLimitDecision d1 = new RateLimitDecision(
+    true, 0, null, null
+);
+
+RateLimitDecision d2 = new RateLimitDecision(
+    true, 0, null, null
+);
+
+boolean equal = d1.equals(d2); // true
+int hash = d1.hashCode(); // same as d2.hashCode()
+```
+
+**Source:** `RateLimitDecision.java:65-78`
+
+## Related
+
+- [RateLimiter](/api/core/rate-limiter) - Returns decisions from evaluate()
+- [RateLimitExceededException](/api/exceptions/rate-limit-exceeded) - Contains decision details

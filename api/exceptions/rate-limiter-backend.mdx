@@ -1,0 +1,398 @@
+---
+title: RateLimiterBackendException
+description: Exception thrown when the backing rate limit store fails
+---
+
+## Overview
+
+The `RateLimiterBackendException` is thrown when the backing rate limit store (typically Redis) cannot be reached or used reliably. This indicates an infrastructure failure rather than a rate limit violation.
+
+**Package:** `io.github.v4runsharma.ratelimiter.exception`
+
+**Source:** `RateLimiterBackendException.java:6`
+
+## Constructors
+
+### Constructor (message only)
+
+```java
+public RateLimiterBackendException(String message)
+```
+
+Creates an exception with a message.
+
+<ParamField path="message" type="String" required>
+  The error message describing the backend failure.
+</ParamField>
+
+**Source:** `RateLimiterBackendException.java:8-10`
+
+### Constructor (message and cause)
+
+```java
+public RateLimiterBackendException(String message, Throwable cause)
+```
+
+Creates an exception with a message and underlying cause.
+
+<ParamField path="message" type="String" required>
+  The error message describing the backend failure.
+</ParamField>
+
+<ParamField path="cause" type="Throwable" required>
+  The underlying exception that caused this failure.
+</ParamField>
+
+**Source:** `RateLimiterBackendException.java:12-14`
+
+## Usage examples
+
+### Catching backend failures
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+
+public class RateLimitService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public boolean checkLimit(String key, RateLimitPolicy policy) {
+        try {
+            RateLimitDecision decision = rateLimiter.evaluate(key, policy);
+            return decision.isAllowed();
+            
+        } catch (RateLimiterBackendException ex) {
+            // Backend (Redis) is unavailable
+            System.err.println("Rate limiter backend error: " + ex.getMessage());
+            
+            // Decide on fallback strategy:
+            // Option 1: Allow the request (fail open)
+            return true;
+            
+            // Option 2: Deny the request (fail closed)
+            // return false;
+            
+            // Option 3: Re-throw to let global handler decide
+            // throw ex;
+        }
+    }
+}
+```
+
+### Throwing from Redis implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.RedisConnectionFailureException;
+
+public class RedisRateLimiter implements RateLimiter {
+    
+    private final RedisTemplate<String, String> redisTemplate;
+    
+    @Override
+    public RateLimitDecision evaluate(String key, RateLimitPolicy policy) {
+        try {
+            // Execute Redis commands
+            Long count = redisTemplate.opsForValue().increment(key);
+            
+            if (count == null) {
+                throw new RateLimiterBackendException(
+                    "Redis returned null for key: " + key
+                );
+            }
+            
+            boolean allowed = count <= policy.getLimit();
+            return new RateLimitDecision(allowed, 0, null, null);
+            
+        } catch (RedisConnectionFailureException ex) {
+            throw new RateLimiterBackendException(
+                "Failed to connect to Redis",
+                ex
+            );
+        } catch (Exception ex) {
+            throw new RateLimiterBackendException(
+                "Redis operation failed for key: " + key,
+                ex
+            );
+        }
+    }
+}
+```
+
+### Global exception handler
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+    
+    @ExceptionHandler(RateLimiterBackendException.class)
+    public ResponseEntity<ErrorResponse> handleBackendException(
+        RateLimiterBackendException ex
+    ) {
+        // Log the error
+        System.err.println("Rate limiter backend failure: " + ex.getMessage());
+        if (ex.getCause() != null) {
+            ex.getCause().printStackTrace();
+        }
+        
+        // Return service unavailable
+        ErrorResponse error = new ErrorResponse(
+            "rate_limiter_unavailable",
+            "Rate limiting service is temporarily unavailable"
+        );
+        
+        return new ResponseEntity<>(error, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    
+    public record ErrorResponse(String code, String message) { }
+}
+```
+
+### Fail-open strategy
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.github.v4runsharma.ratelimiter.core.RateLimitEnforcer;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+
+public class FailOpenEnforcer implements RateLimitEnforcer {
+    
+    private final RateLimitEnforcer delegate;
+    
+    public FailOpenEnforcer(RateLimitEnforcer delegate) {
+        this.delegate = delegate;
+    }
+    
+    @Override
+    public void enforce(RateLimitContext context) 
+            throws RateLimitExceededException {
+        try {
+            delegate.enforce(context);
+            
+        } catch (RateLimiterBackendException ex) {
+            // Log the backend failure
+            System.err.println(
+                "Backend unavailable, allowing request: " + ex.getMessage()
+            );
+            
+            // Allow the request (fail open)
+            // Do not throw - let the request proceed
+        }
+    }
+    
+    @Override
+    public RateLimitDecision evaluate(RateLimitContext context) {
+        try {
+            return delegate.evaluate(context);
+            
+        } catch (RateLimiterBackendException ex) {
+            // Backend unavailable, return allowed decision
+            return new RateLimitDecision(true, 0, null, null);
+        }
+    }
+}
+```
+
+### Fail-closed strategy
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.github.v4runsharma.ratelimiter.core.RateLimitEnforcer;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+public class FailClosedEnforcer implements RateLimitEnforcer {
+    
+    private final RateLimitEnforcer delegate;
+    
+    public FailClosedEnforcer(RateLimitEnforcer delegate) {
+        this.delegate = delegate;
+    }
+    
+    @Override
+    public void enforce(RateLimitContext context) 
+            throws RateLimitExceededException {
+        try {
+            delegate.enforce(context);
+            
+        } catch (RateLimiterBackendException ex) {
+            // Log the backend failure
+            System.err.println(
+                "Backend unavailable, denying request: " + ex.getMessage()
+            );
+            
+            // Deny the request (fail closed)
+            RateLimitDecision deniedDecision = new RateLimitDecision(
+                false,
+                60000,
+                Duration.ofMinutes(1),
+                null
+            );
+            
+            throw new RateLimitExceededException(
+                "backend-unavailable",
+                deniedDecision.getPolicy(),
+                deniedDecision
+            );
+        }
+    }
+    
+    @Override
+    public RateLimitDecision evaluate(RateLimitContext context) {
+        try {
+            return delegate.evaluate(context);
+            
+        } catch (RateLimiterBackendException ex) {
+            // Backend unavailable, return denied decision
+            return new RateLimitDecision(
+                false,
+                60000,
+                Duration.ofMinutes(1),
+                null
+            );
+        }
+    }
+}
+```
+
+### Retry with backoff
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.util.concurrent.TimeUnit;
+
+public class RetryableRateLimiter implements RateLimiter {
+    
+    private final RateLimiter delegate;
+    private final int maxRetries;
+    private final long initialDelayMs;
+    
+    public RetryableRateLimiter(
+        RateLimiter delegate,
+        int maxRetries,
+        long initialDelayMs
+    ) {
+        this.delegate = delegate;
+        this.maxRetries = maxRetries;
+        this.initialDelayMs = initialDelayMs;
+    }
+    
+    @Override
+    public RateLimitDecision evaluate(String key, RateLimitPolicy policy) {
+        int attempt = 0;
+        long delay = initialDelayMs;
+        
+        while (attempt < maxRetries) {
+            try {
+                return delegate.evaluate(key, policy);
+                
+            } catch (RateLimiterBackendException ex) {
+                attempt++;
+                
+                if (attempt >= maxRetries) {
+                    throw ex; // Give up after max retries
+                }
+                
+                System.err.println(
+                    "Backend error (attempt " + attempt + "), retrying in " 
+                    + delay + "ms: " + ex.getMessage()
+                );
+                
+                try {
+                    TimeUnit.MILLISECONDS.sleep(delay);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RateLimiterBackendException(
+                        "Retry interrupted", e
+                    );
+                }
+                
+                // Exponential backoff
+                delay *= 2;
+            }
+        }
+        
+        throw new RateLimiterBackendException(
+            "Failed after " + maxRetries + " retries"
+        );
+    }
+}
+```
+
+### Monitoring and alerting
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimiterBackendException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class BackendMonitor {
+    
+    private static final Logger log = LoggerFactory.getLogger(BackendMonitor.class);
+    private final Counter backendErrorCounter;
+    
+    public BackendMonitor(MeterRegistry registry) {
+        this.backendErrorCounter = Counter.builder("rate_limiter.backend.errors")
+            .description("Number of backend failures")
+            .register(registry);
+    }
+    
+    public void recordBackendError(RateLimiterBackendException ex) {
+        backendErrorCounter.increment();
+        
+        log.error("Rate limiter backend error: {}", ex.getMessage(), ex);
+        
+        // Send alert if error threshold exceeded
+        if (backendErrorCounter.count() > 100) {
+            sendAlert("Rate limiter backend experiencing high error rate");
+        }
+    }
+    
+    private void sendAlert(String message) {
+        // Send to alerting system (PagerDuty, Slack, etc.)
+    }
+}
+```
+
+## When to throw
+
+Throw `RateLimiterBackendException` when:
+
+- Redis connection fails
+- Redis command times out
+- Redis returns unexpected null values
+- Lua script execution fails
+- Network errors occur
+- Redis cluster is unavailable
+
+Do NOT throw for:
+
+- Rate limit exceeded (use `RateLimitExceededException`)
+- Invalid configuration (use `IllegalArgumentException`)
+- Business logic errors
+
+## Related
+
+- [RateLimitExceededException](/api/exceptions/rate-limit-exceeded) - Exception for rate limit violations
+- [RateLimiter](/api/core/rate-limiter) - May throw this exception

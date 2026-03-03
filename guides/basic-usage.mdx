@@ -1,0 +1,164 @@
+---
+title: Basic usage
+description: Learn how to add rate limiting to your Spring Boot endpoints using the @RateLimit annotation
+---
+
+The `@RateLimit` annotation provides a declarative way to add rate limiting to your Spring Boot application endpoints.
+
+<Steps>
+
+### Add the annotation to your controller method
+
+Annotate any controller method or class with `@RateLimit` to enforce rate limiting:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import java.util.concurrent.TimeUnit;
+
+@RestController
+public class ApiController {
+
+    @RateLimit(limit = 10, duration = 1, timeUnit = TimeUnit.MINUTES)
+    @GetMapping("/api/data")
+    public String getData() {
+        return "Hello World";
+    }
+}
+```
+
+This limits the endpoint to 10 requests per minute.
+
+### Apply rate limiting at the class level
+
+You can also apply rate limiting to all methods in a controller:
+
+```java
+@RateLimit(limit = 100, duration = 1, timeUnit = TimeUnit.HOURS)
+@RestController
+public class ApiController {
+
+    @GetMapping("/api/users")
+    public List<User> getUsers() {
+        return userService.findAll();
+    }
+
+    @GetMapping("/api/posts")
+    public List<Post> getPosts() {
+        return postService.findAll();
+    }
+}
+```
+
+Method-level annotations override class-level annotations.
+
+### Configure the scope
+
+Use the `scope` parameter to specify how rate limits are applied:
+
+```java
+// Global rate limit (shared across all users)
+@RateLimit(limit = 100, duration = 1, scope = "global", timeUnit = TimeUnit.MINUTES)
+@GetMapping("/api/public")
+public String getPublicData() {
+    return "Public data";
+}
+
+// Per-user rate limit
+@RateLimit(limit = 10, duration = 1, scope = "user", timeUnit = TimeUnit.MINUTES)
+@GetMapping("/api/profile")
+public User getProfile() {
+    return userService.getCurrentUser();
+}
+
+// Per-IP rate limit
+@RateLimit(limit = 5, duration = 1, scope = "ip", timeUnit = TimeUnit.MINUTES)
+@GetMapping("/api/login")
+public String login() {
+    return "Login successful";
+}
+```
+
+### Use custom keys for fine-grained control
+
+The `key` parameter lets you differentiate rate limits without writing a custom resolver:
+
+```java
+@RateLimit(limit = 5, duration = 1, key = "search", timeUnit = TimeUnit.SECONDS)
+@GetMapping("/api/search")
+public List<Result> search(@RequestParam String query) {
+    return searchService.search(query);
+}
+
+@RateLimit(limit = 10, duration = 1, key = "export", timeUnit = TimeUnit.MINUTES)
+@GetMapping("/api/export")
+public byte[] export() {
+    return exportService.generateReport();
+}
+```
+
+### Name your rate limits
+
+Use the `name` parameter for better observability in metrics and logs:
+
+```java
+@RateLimit(
+    name = "api-search",
+    limit = 20,
+    duration = 1,
+    timeUnit = TimeUnit.MINUTES
+)
+@GetMapping("/api/search")
+public List<Result> search(@RequestParam String query) {
+    return searchService.search(query);
+}
+```
+
+### Disable rate limiting conditionally
+
+Use the `enabled` parameter to turn off rate limiting without removing the annotation:
+
+```java
+@RateLimit(
+    limit = 10,
+    duration = 1,
+    enabled = false,
+    timeUnit = TimeUnit.MINUTES
+)
+@GetMapping("/api/debug")
+public String debug() {
+    return "Debug info";
+}
+```
+
+This is useful for testing or feature flags.
+
+</Steps>
+
+## Annotation reference
+
+The `@RateLimit` annotation supports the following parameters:
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `limit` | `int` | Yes | - | Maximum number of requests allowed within the window |
+| `duration` | `long` | Yes | - | Window size in the specified time unit |
+| `timeUnit` | `TimeUnit` | No | `SECONDS` | Time unit for the duration (SECONDS, MINUTES, HOURS, etc.) |
+| `scope` | `String` | No | `""` | Scope hint for the rate limit (e.g., "user", "ip", "global") |
+| `key` | `String` | No | `""` | Static key suffix to differentiate limits |
+| `name` | `String` | No | `""` | Logical name for metrics and monitoring |
+| `enabled` | `boolean` | No | `true` | Whether rate limiting is enabled |
+| `keyResolver` | `Class` | No | `RateLimitKeyResolver.class` | Custom key resolver implementation |
+
+## How it works
+
+When a method annotated with `@RateLimit` is called:
+
+1. The AOP interceptor captures the invocation (see `RateLimitAspect.java:24-44`)
+2. A key is resolved based on the scope and configuration
+3. The rate limiter checks if the request exceeds the limit
+4. If allowed, the method proceeds normally
+5. If blocked, a `RateLimitExceededException` is thrown, which returns HTTP 429
+
+The annotation can be placed on both methods and classes, with method-level annotations taking precedence.

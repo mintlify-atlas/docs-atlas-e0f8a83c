@@ -1,0 +1,193 @@
+---
+title: RateLimitPolicyProvider
+description: Interface for resolving rate limit policies from invocation context
+---
+
+## Overview
+
+The `RateLimitPolicyProvider` interface resolves the effective rate limit policy for an invocation. It separates policy resolution logic (reading annotations, applying overrides) from the enforcement mechanism.
+
+**Package:** `io.github.v4runsharma.ratelimiter.core`
+
+**Source:** `RateLimitPolicyProvider.java:11`
+
+## Purpose
+
+This abstraction exists to:
+- Keep policy resolution separate from enforcement
+- Allow swapping strategies without changing the `RateLimiter` implementation
+- Support configuration overrides and dynamic policies
+
+## Methods
+
+### resolvePolicy
+
+```java
+RateLimitPolicy resolvePolicy(RateLimitContext context)
+```
+
+Resolves the policy to enforce for the given invocation context.
+
+**Typical implementation:**
+1. Read `@RateLimit` values from `context.getAnnotation()`
+2. Convert annotation parameters to a `RateLimitPolicy` object
+3. Optionally apply overrides from properties or dynamic configuration
+
+<ParamField path="context" type="RateLimitContext" required>
+  The invocation context containing the annotation, method, target class, and arguments.
+</ParamField>
+
+<ResponseField name="return" type="RateLimitPolicy">
+  The resolved rate limit policy containing limit, window duration, and scope.
+</ResponseField>
+
+## Usage example
+
+### Basic implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import java.time.Duration;
+
+public class AnnotationPolicyProvider implements RateLimitPolicyProvider {
+    
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        
+        // Convert annotation parameters to policy
+        int limit = annotation.limit();
+        Duration window = Duration.of(
+            annotation.duration(), 
+            annotation.timeUnit().toChronoUnit()
+        );
+        String scope = annotation.scope();
+        
+        return new RateLimitPolicy(limit, window, scope);
+    }
+}
+```
+
+### With configuration overrides
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import java.time.Duration;
+import java.util.Map;
+
+public class ConfigurablePolicyProvider implements RateLimitPolicyProvider {
+    
+    private final Map<String, PolicyOverride> overrides;
+    
+    public ConfigurablePolicyProvider(Map<String, PolicyOverride> overrides) {
+        this.overrides = overrides;
+    }
+    
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        
+        // Start with annotation defaults
+        int limit = annotation.limit();
+        Duration window = Duration.of(
+            annotation.duration(), 
+            annotation.timeUnit().toChronoUnit()
+        );
+        String scope = annotation.scope();
+        
+        // Check for configuration override
+        String name = annotation.name();
+        if (!name.isEmpty() && overrides.containsKey(name)) {
+            PolicyOverride override = overrides.get(name);
+            limit = override.getLimit();
+            window = override.getWindow();
+            scope = override.getScope();
+        }
+        
+        return new RateLimitPolicy(limit, window, scope);
+    }
+    
+    public static class PolicyOverride {
+        private final int limit;
+        private final Duration window;
+        private final String scope;
+        
+        public PolicyOverride(int limit, Duration window, String scope) {
+            this.limit = limit;
+            this.window = window;
+            this.scope = scope;
+        }
+        
+        public int getLimit() { return limit; }
+        public Duration getWindow() { return window; }
+        public String getScope() { return scope; }
+    }
+}
+```
+
+### Dynamic policy based on user tier
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+
+public class TierBasedPolicyProvider implements RateLimitPolicyProvider {
+    
+    private final UserService userService;
+    
+    public TierBasedPolicyProvider(UserService userService) {
+        this.userService = userService;
+    }
+    
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        // Extract user ID from method arguments
+        String userId = extractUserId(context);
+        UserTier tier = userService.getUserTier(userId);
+        
+        // Return policy based on tier
+        return switch (tier) {
+            case FREE -> new RateLimitPolicy(
+                100, 
+                Duration.ofMinutes(1), 
+                "user"
+            );
+            case PREMIUM -> new RateLimitPolicy(
+                1000, 
+                Duration.ofMinutes(1), 
+                "user"
+            );
+            case ENTERPRISE -> new RateLimitPolicy(
+                10000, 
+                Duration.ofMinutes(1), 
+                "user"
+            );
+        };
+    }
+    
+    private String extractUserId(RateLimitContext context) {
+        // Extract from method arguments
+        Object[] args = context.getArguments();
+        // Implementation details...
+        return "user-id";
+    }
+}
+```
+
+## Default implementation
+
+The library provides `AnnotationRateLimitPolicyProvider` which reads policies directly from the `@RateLimit` annotation without any overrides.
+
+## Related
+
+- [RateLimitEnforcer](/api/core/rate-limit-enforcer) - Uses this to resolve policies
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Policy model returned
+- [@RateLimit](/api/annotations/rate-limit) - Annotation containing policy metadata

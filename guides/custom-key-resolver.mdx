@@ -1,0 +1,319 @@
+---
+title: Custom key resolver
+description: Implement custom key resolution strategies to control how rate limits are grouped and applied
+---
+
+A key resolver determines which requests share the same rate limit bucket. Custom resolvers let you implement advanced strategies like per-tenant limiting, API key-based limits, or composite keys.
+
+## Understanding key resolvers
+
+The `RateLimitKeyResolver` interface (from `key/RateLimitKeyResolver.java:11-21`) is responsible for generating a unique key that identifies which bucket a request should be counted against:
+
+```java
+public interface RateLimitKeyResolver {
+    /**
+     * Compute a key identifying the caller/bucket.
+     * Guidelines:
+     * - Return a non-empty, stable string (same caller -> same key)
+     * - Prefer predictable formats (e.g., "user:123", "ip:203.0.113.10")
+     */
+    String resolveKey(RateLimitContext context);
+}
+```
+
+## Default behavior
+
+The `DefaultRateLimitKeyResolver` (from `key/DefaultRateLimitKeyResolver.java:11-32`) creates keys from scope and method metadata:
+
+```java
+@Override
+public String resolveKey(RateLimitContext context) {
+    RateLimit annotation = context.getAnnotation();
+    
+    String scope = normalizeScope(annotation.scope());
+    if (annotation.key() != null && !annotation.key().isBlank()) {
+        return scope + ":" + annotation.key().trim();
+    }
+    
+    return scope + ":" + context.getTargetClass().getName() 
+        + "#" + context.getMethod().getName();
+}
+```
+
+This generates keys like:
+- `global:com.example.ApiController#getData`
+- `user:search` (when `key = "search"` is specified)
+
+<Steps>
+
+### Create your resolver class
+
+Implement the `RateLimitKeyResolver` interface:
+
+```java
+package com.example.ratelimit;
+
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class UserIdKeyResolver implements RateLimitKeyResolver {
+
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        
+        if (auth == null || !auth.isAuthenticated()) {
+            return "anonymous";
+        }
+        
+        String userId = auth.getName();
+        String methodName = context.getMethod().getName();
+        
+        return "user:" + userId + ":" + methodName;
+    }
+}
+```
+
+### Reference the resolver in your annotation
+
+Use the `keyResolver` parameter to specify your custom resolver:
+
+```java
+import com.example.ratelimit.UserIdKeyResolver;
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class ApiController {
+
+    @RateLimit(
+        limit = 10,
+        duration = 1,
+        keyResolver = UserIdKeyResolver.class
+    )
+    @GetMapping("/api/data")
+    public String getData() {
+        return "Data";
+    }
+}
+```
+
+### Access invocation context
+
+The `RateLimitContext` interface (from `core/RateLimitContext.java:15-46`) provides rich information about the invocation:
+
+```java
+public interface RateLimitContext {
+    RateLimit getAnnotation();      // The @RateLimit annotation
+    Class<?> getTargetClass();      // The controller class
+    Method getMethod();             // The method being called
+    Object[] getArguments();        // Method arguments
+    Object getTarget();             // The target instance
+}
+```
+
+You can use this to extract parameters, inspect annotations, or access instance state.
+
+</Steps>
+
+## Example: API key resolver
+
+Limit requests per API key extracted from a header:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+@Component
+public class ApiKeyResolver implements RateLimitKeyResolver {
+
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        HttpServletRequest request = getCurrentRequest();
+        
+        String apiKey = request.getHeader("X-API-Key");
+        if (apiKey == null || apiKey.isBlank()) {
+            return "no-api-key";
+        }
+        
+        return "apikey:" + apiKey;
+    }
+    
+    private HttpServletRequest getCurrentRequest() {
+        ServletRequestAttributes attrs = 
+            (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        return attrs.getRequest();
+    }
+}
+```
+
+## Example: Tenant-based resolver
+
+Group rate limits by tenant ID:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.stereotype.Component;
+
+@Component
+public class TenantKeyResolver implements RateLimitKeyResolver {
+
+    private final TenantContext tenantContext;
+    
+    public TenantKeyResolver(TenantContext tenantContext) {
+        this.tenantContext = tenantContext;
+    }
+
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        String tenantId = tenantContext.getCurrentTenantId();
+        String endpoint = context.getMethod().getName();
+        
+        return "tenant:" + tenantId + ":" + endpoint;
+    }
+}
+```
+
+## Example: Parameter-based resolver
+
+Extract keys from method parameters:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.PathVariable;
+
+import java.lang.reflect.Parameter;
+
+@Component
+public class ResourceIdResolver implements RateLimitKeyResolver {
+
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        Parameter[] parameters = context.getMethod().getParameters();
+        Object[] arguments = context.getArguments();
+        
+        for (int i = 0; i < parameters.length; i++) {
+            if (parameters[i].isAnnotationPresent(PathVariable.class)) {
+                PathVariable pathVar = parameters[i].getAnnotation(PathVariable.class);
+                if ("resourceId".equals(pathVar.value())) {
+                    return "resource:" + arguments[i];
+                }
+            }
+        }
+        
+        return "unknown";
+    }
+}
+```
+
+Usage:
+
+```java
+@RateLimit(
+    limit = 100,
+    duration = 1,
+    keyResolver = ResourceIdResolver.class
+)
+@GetMapping("/api/resources/{resourceId}")
+public Resource getResource(@PathVariable String resourceId) {
+    return resourceService.findById(resourceId);
+}
+```
+
+## Best practices
+
+### Return stable, predictable keys
+
+Keys should be deterministic - the same caller should always get the same key:
+
+```java
+// Good: Stable key format
+return "user:" + userId + ":" + methodName;
+
+// Bad: Non-deterministic (includes timestamp)
+return "user:" + userId + ":" + System.currentTimeMillis();
+```
+
+### Handle missing context gracefully
+
+Always provide a fallback when context is unavailable:
+
+```java
+@Override
+public String resolveKey(RateLimitContext context) {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    
+    if (auth == null || !auth.isAuthenticated()) {
+        return "anonymous";  // Fallback for unauthenticated users
+    }
+    
+    return "user:" + auth.getName();
+}
+```
+
+### Use meaningful prefixes
+
+Prefix keys with their type for clarity and to avoid collisions:
+
+```java
+// Good: Clear prefixes
+return "user:" + userId;
+return "apikey:" + apiKey;
+return "ip:" + ipAddress;
+
+// Bad: No context
+return userId;
+return apiKey;
+```
+
+### Consider key cardinality
+
+Be mindful of how many unique keys you generate:
+
+```java
+// High cardinality: One bucket per user per endpoint
+return "user:" + userId + ":" + methodName;
+
+// Lower cardinality: One bucket per user across all endpoints
+return "user:" + userId;
+
+// Lowest cardinality: One global bucket
+return "global";
+```
+
+Higher cardinality provides more granular control but uses more Redis memory.
+
+## Register as default resolver
+
+To use your resolver as the default for all annotations:
+
+```java
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+@Configuration
+public class RateLimiterConfig {
+
+    @Bean
+    @Primary
+    public RateLimitKeyResolver defaultKeyResolver() {
+        return new UserIdKeyResolver();
+    }
+}
+```
+
+Now all `@RateLimit` annotations without an explicit `keyResolver` will use your custom resolver.

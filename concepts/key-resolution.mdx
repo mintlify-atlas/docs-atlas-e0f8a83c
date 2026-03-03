@@ -1,0 +1,503 @@
+---
+title: Key resolution
+description: Learn how rate limit keys are generated and how to customize key resolution strategies
+---
+
+Key resolution is the process of determining which Redis key (bucket) to use for rate limiting a particular request. The key determines what gets counted together.
+
+## Why key resolution matters
+
+Different applications have different rate limiting requirements:
+
+<CardGroup cols={2}>
+  <Card title="Global rate limiting" icon="globe">
+    All requests to an endpoint share the same counter
+  </Card>
+  <Card title="Per-user rate limiting" icon="user">
+    Each user has their own counter
+  </Card>
+  <Card title="Per-IP rate limiting" icon="network-wired">
+    Each IP address has its own counter
+  </Card>
+  <Card title="Per-tenant rate limiting" icon="building">
+    Each tenant/organization has its own counter
+  </Card>
+</CardGroup>
+
+The `RateLimitKeyResolver` interface (key/RateLimitKeyResolver.java:11) allows you to implement any of these strategies.
+
+## Default key resolver
+
+The library provides `DefaultRateLimitKeyResolver` (key/DefaultRateLimitKeyResolver.java:11), which generates keys from the annotation's scope and the method signature.
+
+### Key format
+
+The default resolver generates keys in this format:
+
+```
+{scope}:{className}#{methodName}
+```
+
+or if you specify a custom key in the annotation:
+
+```
+{scope}:{customKey}
+```
+
+### Source code walkthrough
+
+Here's the complete implementation from key/DefaultRateLimitKeyResolver.java:14-24:
+
+```java
+@Override
+public String resolveKey(RateLimitContext context) {
+    Objects.requireNonNull(context, "context must not be null");
+    RateLimit annotation = Objects.requireNonNull(context.getAnnotation(), "annotation must not be null");
+
+    String scope = normalizeScope(annotation.scope());
+    if (annotation.key() != null && !annotation.key().isBlank()) {
+        return scope + ":" + annotation.key().trim();
+    }
+
+    return scope + ":" + context.getTargetClass().getName() + "#" + context.getMethod().getName();
+}
+```
+
+<Steps>
+  <Step title="Extract annotation">
+    Get the `@RateLimit` annotation from the context
+  </Step>
+  
+  <Step title="Normalize scope">
+    Convert the scope string to lowercase (e.g., "USER" → "user", "IP" → "ip")
+  </Step>
+  
+  <Step title="Check for custom key">
+    If the annotation has a non-blank `key` attribute, use it
+  </Step>
+  
+  <Step title="Generate default key">
+    Otherwise, combine the fully-qualified class name and method name
+  </Step>
+</Steps>
+
+## Scope normalization
+
+The `normalizeScope` method (key/DefaultRateLimitKeyResolver.java:26-31) ensures consistent scope formatting:
+
+```java
+private static String normalizeScope(String rawScope) {
+    if (rawScope == null || rawScope.isBlank()) {
+        return RateLimitScope.GLOBAL.getScope().toLowerCase();
+    }
+    return RateLimitScope.from(rawScope).getScope().toLowerCase();
+}
+```
+
+<Note>
+If no scope is specified, it defaults to `GLOBAL`. The scope is always converted to lowercase for consistency.
+</Note>
+
+## Built-in scope types
+
+The library defines three built-in scopes in `RateLimitScope` (model/RateLimitScope.java:3):
+
+<Tabs>
+  <Tab title="GLOBAL">
+    All requests share the same counter regardless of who makes them.
+    
+    **Example key:**
+    ```
+    global:com.example.ApiController#getData
+    ```
+    
+    **Use case:** Public endpoints with absolute limits (e.g., "no more than 1000 requests/hour total")
+  </Tab>
+  
+  <Tab title="USER">
+    Each authenticated user has their own counter.
+    
+    **Example key:**
+    ```
+    user:com.example.ApiController#getData
+    ```
+    
+    **Use case:** Authenticated API endpoints where you want to limit each user separately
+    
+    <Warning>
+    The default resolver doesn't automatically extract user IDs. You need to implement a custom resolver to include user-specific information in the key.
+    </Warning>
+  </Tab>
+  
+  <Tab title="IP">
+    Each IP address has its own counter.
+    
+    **Example key:**
+    ```
+    ip:com.example.ApiController#getData
+    ```
+    
+    **Use case:** Public endpoints where you want to prevent abuse from individual IPs
+    
+    <Warning>
+    Like USER scope, the default resolver doesn't automatically extract IP addresses. You need a custom resolver for IP-based rate limiting.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Real-world examples
+
+### Example 1: Global rate limiting
+
+```java
+@RateLimit(limit = 100, duration = 60, scope = "global")
+public List<Post> getRecentPosts() {
+    return postService.getRecent();
+}
+```
+
+**Generated key:**
+```
+global:com.example.PostController#getRecentPosts
+```
+
+All clients share the same 100 requests/minute limit.
+
+### Example 2: Custom key for shared limits
+
+```java
+@RateLimit(limit = 50, duration = 60, key = "search-api")
+public SearchResults searchPosts(@RequestParam String query) {
+    return searchService.search(query);
+}
+
+@RateLimit(limit = 50, duration = 60, key = "search-api")
+public SearchResults searchUsers(@RequestParam String query) {
+    return userService.search(query);
+}
+```
+
+**Generated keys:**
+```
+global:search-api  // Both methods share this key
+```
+
+<Tip>
+Use custom keys to group multiple endpoints under a shared rate limit.
+</Tip>
+
+### Example 3: Method-specific limits
+
+```java
+public class ApiController {
+    
+    @RateLimit(limit = 100, duration = 60)
+    public UserData getUser(@PathVariable String id) {
+        return userService.getUser(id);
+    }
+    
+    @RateLimit(limit = 10, duration = 60)
+    public void updateUser(@PathVariable String id, @RequestBody UserData data) {
+        userService.update(id, data);
+    }
+}
+```
+
+**Generated keys:**
+```
+global:com.example.ApiController#getUser
+global:com.example.ApiController#updateUser
+```
+
+Each method has its own independent rate limit.
+
+## Custom key resolvers
+
+For more advanced scenarios, you can implement your own `RateLimitKeyResolver`.
+
+### The RateLimitKeyResolver interface
+
+The interface is simple (key/RateLimitKeyResolver.java:11-21):
+
+```java
+public interface RateLimitKeyResolver {
+    String resolveKey(RateLimitContext context);
+}
+```
+
+The `RateLimitContext` provides (core/RateLimitContext.java:15):
+
+<ResponseField name="getAnnotation()" type="RateLimit">
+  The `@RateLimit` annotation with all its attributes (scope, limit, duration, key, etc.)
+</ResponseField>
+
+<ResponseField name="getTargetClass()" type="Class<?>">
+  The class containing the annotated method
+</ResponseField>
+
+<ResponseField name="getMethod()" type="Method">
+  The method being invoked
+</ResponseField>
+
+<ResponseField name="getArguments()" type="Object[]">
+  The arguments passed to the method (useful for extracting IDs from parameters)
+</ResponseField>
+
+<ResponseField name="getTarget()" type="Object">
+  The target instance (may be null for static methods)
+</ResponseField>
+
+### Example: Per-user key resolver
+
+Here's a custom resolver that extracts the user ID from Spring Security:
+
+```java
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class UserIdKeyResolver implements RateLimitKeyResolver {
+    
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        String scope = context.getAnnotation().scope();
+        if (scope == null || scope.isBlank()) {
+            scope = "global";
+        }
+        
+        // Extract user ID from Spring Security
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated()) {
+            return scope.toLowerCase() + ":anonymous";
+        }
+        
+        String userId = auth.getName(); // or auth.getPrincipal()
+        String methodKey = context.getTargetClass().getSimpleName() 
+                         + "#" + context.getMethod().getName();
+        
+        return scope.toLowerCase() + ":user:" + userId + ":" + methodKey;
+    }
+}
+```
+
+**Generated key example:**
+```
+user:user:john.doe@example.com:ApiController#getData
+```
+
+<Accordion title="Explanation">
+- Extracts the authenticated user from Spring Security
+- Falls back to "anonymous" for unauthenticated requests
+- Combines scope, user ID, and method name
+- Each user gets their own independent rate limit
+</Accordion>
+
+### Example: Per-IP key resolver
+
+```java
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+@Component
+public class IpAddressKeyResolver implements RateLimitKeyResolver {
+    
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        String scope = context.getAnnotation().scope().toLowerCase();
+        String ipAddress = getClientIpAddress();
+        String methodKey = context.getMethod().getName();
+        
+        return scope + ":ip:" + ipAddress + ":" + methodKey;
+    }
+    
+    private String getClientIpAddress() {
+        ServletRequestAttributes attrs = 
+            (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+        
+        if (attrs == null) {
+            return "unknown";
+        }
+        
+        HttpServletRequest request = attrs.getRequest();
+        
+        // Check for X-Forwarded-For header (load balancer/proxy)
+        String xff = request.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            return xff.split(",")[0].trim();
+        }
+        
+        // Fall back to remote address
+        return request.getRemoteAddr();
+    }
+}
+```
+
+**Generated key example:**
+```
+ip:ip:192.168.1.100:getData
+```
+
+<Warning>
+Be careful when using X-Forwarded-For headers, as they can be spoofed. Only trust them if you're behind a trusted proxy/load balancer.
+</Warning>
+
+### Example: Parameter-based key resolver
+
+```java
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import org.springframework.stereotype.Component;
+import org.springframework.web.bind.annotation.PathVariable;
+import java.lang.reflect.Parameter;
+
+@Component
+public class TenantIdKeyResolver implements RateLimitKeyResolver {
+    
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        String scope = context.getAnnotation().scope().toLowerCase();
+        String tenantId = extractTenantId(context);
+        String methodKey = context.getMethod().getName();
+        
+        return scope + ":tenant:" + tenantId + ":" + methodKey;
+    }
+    
+    private String extractTenantId(RateLimitContext context) {
+        Parameter[] parameters = context.getMethod().getParameters();
+        Object[] arguments = context.getArguments();
+        
+        // Look for a parameter named "tenantId" or annotated with @PathVariable("tenantId")
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter param = parameters[i];
+            if (param.getName().equals("tenantId")) {
+                return String.valueOf(arguments[i]);
+            }
+        }
+        
+        return "default";
+    }
+}
+```
+
+**Usage:**
+```java
+@RateLimit(limit = 100, duration = 60, keyResolver = TenantIdKeyResolver.class)
+public Data getTenantData(@PathVariable String tenantId) {
+    return dataService.getByTenant(tenantId);
+}
+```
+
+**Generated key example:**
+```
+global:tenant:acme-corp:getTenantData
+```
+
+## Registering custom resolvers
+
+To use a custom key resolver, you have two options:
+
+### Option 1: Register as a Spring bean
+
+Simply annotate your resolver with `@Component` or register it as a bean:
+
+```java
+@Component
+public class UserIdKeyResolver implements RateLimitKeyResolver {
+    // ...
+}
+```
+
+The auto-configuration will automatically detect and register it (support/DefaultRateLimitEnforcer.java:59-65).
+
+### Option 2: Specify in annotation
+
+Reference your resolver class in the `@RateLimit` annotation:
+
+```java
+@RateLimit(
+    limit = 50, 
+    duration = 60,
+    keyResolver = UserIdKeyResolver.class  // Use custom resolver
+)
+public ApiResponse getData() {
+    // ...
+}
+```
+
+<Info>
+If you specify a `keyResolver` in the annotation, that resolver takes precedence over the default resolver for that specific method.
+</Info>
+
+## Best practices
+
+<CardGroup cols={2}>
+  <Card title="Keep keys stable" icon="anchor">
+    The same request should always generate the same key. Avoid including timestamps or random values.
+  </Card>
+  
+  <Card title="Keep keys short" icon="minimize">
+    Redis keys are stored in memory. Use abbreviations for common prefixes (e.g., "u:" instead of "user:").
+  </Card>
+  
+  <Card title="Include method context" icon="code">
+    Include the method or endpoint name in the key to prevent different operations from sharing limits unintentionally.
+  </Card>
+  
+  <Card title="Validate extracted values" icon="check">
+    Always validate user IDs, IP addresses, etc. Fall back to a safe default (e.g., "anonymous", "unknown").
+  </Card>
+</CardGroup>
+
+<Tip>
+Test your key resolver by logging the generated keys during development. This helps catch issues before production.
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Rate limits not working as expected">
+    **Symptom:** Users are sharing limits when they shouldn't be (or vice versa).
+    
+    **Solution:** Log the generated keys and verify they're unique per user/IP/tenant:
+    ```java
+    String key = keyResolver.resolveKey(context);
+    log.debug("Rate limit key: {}", key);
+    ```
+  </Accordion>
+  
+  <Accordion title="NullPointerException in custom resolver">
+    **Symptom:** Your custom resolver throws NPE.
+    
+    **Solution:** Always check for null values, especially:
+    - `context.getArguments()` can be empty
+    - Spring Security context might not be initialized
+    - HTTP request might not be available in async/batch contexts
+  </Accordion>
+  
+  <Accordion title="Custom resolver not being used">
+    **Symptom:** The default resolver is still being used instead of your custom one.
+    
+    **Solution:** Ensure:
+    1. Your resolver is annotated with `@Component` or registered as a bean
+    2. You've specified `keyResolver` in the `@RateLimit` annotation
+    3. Your resolver class is not abstract or interface
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Overview" href="/concepts/overview" icon="book">
+    Learn about the overall architecture
+  </Card>
+  <Card title="Fail-open vs fail-closed" href="/concepts/fail-open-closed" icon="shield-halved">
+    Configure fault tolerance behavior
+  </Card>
+</CardGroup>

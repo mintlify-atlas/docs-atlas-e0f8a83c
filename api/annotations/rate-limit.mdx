@@ -1,0 +1,149 @@
+---
+title: '@RateLimit'
+description: Annotation for declaring rate limits on methods or classes
+---
+
+## Overview
+
+The `@RateLimit` annotation declares a rate limit policy for a method or type. It carries configuration metadata that is read by the enforcement layer (aspect/interceptor) to apply rate limiting.
+
+**Package:** `io.github.v4runsharma.ratelimiter.annotation`
+
+**Source:** `RateLimit.java:22`
+
+## Annotation targets
+
+- `ElementType.METHOD` - Apply to individual methods
+- `ElementType.TYPE` - Apply to entire classes (inherited by all methods)
+
+## Parameters
+
+<ParamField path="name" type="String" default='""'>
+  Optional logical name for the limit. Used for metrics tags, configuration override lookup, or documentation.
+</ParamField>
+
+<ParamField path="scope" type="String" default='""'>
+  Optional scope hint for the policy (e.g., "user", "ip", "global"). How this is interpreted depends on the policy provider and key resolver strategy.
+</ParamField>
+
+<ParamField path="limit" type="int" required>
+  Maximum number of allowed requests within the time window. Must be greater than 0.
+</ParamField>
+
+<ParamField path="duration" type="long" required>
+  Window size in the specified time unit. Must be positive.
+</ParamField>
+
+<ParamField path="timeUnit" type="TimeUnit" default="TimeUnit.SECONDS">
+  Time unit for the duration parameter. Defaults to `SECONDS`.
+</ParamField>
+
+<ParamField path="keyResolver" type="Class<? extends RateLimitKeyResolver>" default="RateLimitKeyResolver.class">
+  Key resolver type to compute the rate limit key for this annotation. Defaulting to the interface type acts as a sentinel meaning "not explicitly set"; the starter substitutes a default implementation.
+</ParamField>
+
+<ParamField path="key" type="String" default='""'>
+  Optional static key suffix to disambiguate limits without writing a custom resolver.
+</ParamField>
+
+<ParamField path="enabled" type="boolean" default="true">
+  Feature flag to disable enforcement without removing the annotation.
+</ParamField>
+
+## Usage examples
+
+### Basic rate limit
+
+Limit a method to 10 requests per second:
+
+```java
+@RateLimit(limit = 10, duration = 1)
+public void handleRequest() {
+    // Method implementation
+}
+```
+
+### User-scoped rate limit
+
+Limit per user to 100 requests per minute:
+
+```java
+@RateLimit(
+    name = "user-api-limit",
+    scope = "user",
+    limit = 100,
+    duration = 1,
+    timeUnit = TimeUnit.MINUTES
+)
+public void getUserData(String userId) {
+    // Method implementation
+}
+```
+
+### IP-based rate limit
+
+Limit per IP address to 1000 requests per hour:
+
+```java
+@RateLimit(
+    scope = "ip",
+    limit = 1000,
+    duration = 1,
+    timeUnit = TimeUnit.HOURS
+)
+public void publicEndpoint() {
+    // Method implementation
+}
+```
+
+### Custom key
+
+Use a static key suffix:
+
+```java
+@RateLimit(
+    key = "payment-processing",
+    limit = 5,
+    duration = 10
+)
+public void processPayment(PaymentRequest request) {
+    // Method implementation
+}
+```
+
+### Class-level rate limit
+
+Apply to all methods in a class:
+
+```java
+@RateLimit(limit = 50, duration = 1, timeUnit = TimeUnit.MINUTES)
+public class OrderController {
+    
+    public void createOrder() { }
+    
+    public void updateOrder() { }
+    
+    // Both methods inherit the rate limit
+}
+```
+
+### Disabled rate limit
+
+Temporarily disable without removing the annotation:
+
+```java
+@RateLimit(
+    limit = 10,
+    duration = 1,
+    enabled = false
+)
+public void testMethod() {
+    // Rate limiting is disabled
+}
+```
+
+## Related
+
+- [RateLimitKeyResolver](/api/key/rate-limit-key-resolver) - Customize key resolution
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Policy model created from annotation
+- [RateLimitScope](/api/models/rate-limit-scope) - Available scope values

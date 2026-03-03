@@ -1,0 +1,156 @@
+---
+title: Configuration properties
+description: Complete reference for all rate limiter configuration properties
+---
+
+The Spring Boot Redis Rate Limiter provides several configuration properties under the `ratelimiter` prefix to customize its behavior.
+
+## Configuration properties
+
+<ParamField path="ratelimiter.enabled" type="boolean" default="true">
+  Global switch for rate limiter auto-configuration. Set to `false` to completely disable the rate limiter.
+</ParamField>
+
+<ParamField path="ratelimiter.redis-key-prefix" type="string" default="ratelimiter">
+  Redis key prefix used for rate-limit buckets. All rate limit counters stored in Redis will be prefixed with this value.
+  
+  The final Redis key format is: `{prefix}:{key}:{windowStartMillis}`
+</ParamField>
+
+<ParamField path="ratelimiter.fail-open" type="boolean" default="false">
+  Failure strategy when Redis is unavailable.
+  
+  - `false`: Fail-closed (throw `RateLimiterBackendException`)
+  - `true`: Fail-open (allow request to proceed)
+  
+  <Warning>
+    Setting this to `true` means requests will be allowed through when Redis is down, which may expose your API to abuse during outages.
+  </Warning>
+</ParamField>
+
+<ParamField path="ratelimiter.include-http-headers" type="boolean" default="true">
+  Whether HTTP 429 responses should include rate-limit headers.
+  
+  When enabled, the following headers are added to 429 responses:
+  - `X-RateLimit-Limit`: The rate limit quota
+  - `X-RateLimit-Remaining`: Remaining requests in current window
+  - `X-RateLimit-Reset`: Time when the rate limit resets
+  - `Retry-After`: Seconds until the next request can be made
+</ParamField>
+
+<ParamField path="ratelimiter.metrics-enabled" type="boolean" default="true">
+  Whether Micrometer metrics should be recorded when a `MeterRegistry` is present.
+  
+  When enabled and Micrometer is on the classpath, the rate limiter will record metrics for:
+  - Request evaluations (allowed vs. denied)
+  - Backend failures
+  - Per-key rate limit statistics
+</ParamField>
+
+## Configuration examples
+
+<CodeGroup>
+
+```properties application.properties
+# Enable rate limiter (default)
+ratelimiter.enabled=true
+
+# Customize Redis key prefix
+ratelimiter.redis-key-prefix=myapp:ratelimit
+
+# Fail open when Redis is unavailable
+ratelimiter.fail-open=true
+
+# Include rate limit headers in 429 responses
+ratelimiter.include-http-headers=true
+
+# Enable metrics collection
+ratelimiter.metrics-enabled=true
+```
+
+```yaml application.yml
+ratelimiter:
+  # Enable rate limiter (default)
+  enabled: true
+  
+  # Customize Redis key prefix
+  redis-key-prefix: myapp:ratelimit
+  
+  # Fail open when Redis is unavailable
+  fail-open: true
+  
+  # Include rate limit headers in 429 responses
+  include-http-headers: true
+  
+  # Enable metrics collection
+  metrics-enabled: true
+```
+
+</CodeGroup>
+
+## Minimal configuration
+
+If you're satisfied with the defaults, you don't need to configure anything:
+
+<CodeGroup>
+
+```properties application.properties
+# Only Redis connection is required
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+```
+
+</CodeGroup>
+
+<Note>
+  The rate limiter will automatically configure itself when it detects a `StringRedisTemplate` bean in your application context.
+</Note>
+
+## Production configuration
+
+For production environments, consider this configuration:
+
+<CodeGroup>
+
+```properties application.properties
+# Use a descriptive key prefix
+ratelimiter.redis-key-prefix=prod:api:ratelimit
+
+# Fail closed for security (default)
+ratelimiter.fail-open=false
+
+# Include headers for client feedback
+ratelimiter.include-http-headers=true
+
+# Enable metrics for monitoring
+ratelimiter.metrics-enabled=true
+```
+
+```yaml application.yml
+ratelimiter:
+  # Use a descriptive key prefix
+  redis-key-prefix: prod:api:ratelimit
+  
+  # Fail closed for security (default)
+  fail-open: false
+  
+  # Include headers for client feedback
+  include-http-headers: true
+  
+  # Enable metrics for monitoring
+  metrics-enabled: true
+```
+
+</CodeGroup>
+
+<Warning>
+  In production, always set `fail-open: false` (the default) to prevent rate limit bypass when Redis is unavailable. Monitor Redis availability closely.
+</Warning>

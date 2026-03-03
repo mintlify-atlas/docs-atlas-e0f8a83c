@@ -1,0 +1,432 @@
+---
+title: RateLimitMetricsRecorder
+description: Interface for recording rate limit metrics
+---
+
+## Overview
+
+The `RateLimitMetricsRecorder` interface records rate limit metrics for successful evaluations and errors. Implementations typically integrate with monitoring systems like Micrometer.
+
+**Package:** `io.github.v4runsharma.ratelimiter.metrics`
+
+**Source:** `RateLimitMetricsRecorder.java:10`
+
+## Methods
+
+### recordDecision
+
+```java
+void recordDecision(
+    String name,
+    RateLimitPolicy policy,
+    RateLimitDecision decision,
+    Duration latency
+)
+```
+
+Records a rate limit decision (allowed or denied).
+
+<ParamField path="name" type="String" required>
+  The logical name of the rate limit (from annotation or key).
+</ParamField>
+
+<ParamField path="policy" type="RateLimitPolicy" required>
+  The rate limit policy that was evaluated.
+</ParamField>
+
+<ParamField path="decision" type="RateLimitDecision" required>
+  The evaluation decision indicating if the request was allowed or denied.
+</ParamField>
+
+<ParamField path="latency" type="Duration" required>
+  The time taken to evaluate the rate limit.
+</ParamField>
+
+**Source:** `RateLimitMetricsRecorder.java:12`
+
+### recordError
+
+```java
+void recordError(
+    String name,
+    RateLimitPolicy policy,
+    Duration latency,
+    Throwable error
+)
+```
+
+Records a rate limit evaluation error (e.g., backend failure).
+
+<ParamField path="name" type="String" required>
+  The logical name of the rate limit (from annotation or key).
+</ParamField>
+
+<ParamField path="policy" type="RateLimitPolicy" required>
+  The rate limit policy being evaluated when the error occurred.
+</ParamField>
+
+<ParamField path="latency" type="Duration" required>
+  The time taken before the error occurred.
+</ParamField>
+
+<ParamField path="error" type="Throwable" required>
+  The error that occurred during evaluation.
+</ParamField>
+
+**Source:** `RateLimitMetricsRecorder.java:14`
+
+## Usage examples
+
+### Micrometer implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
+
+public class MicrometerMetricsRecorder implements RateLimitMetricsRecorder {
+    
+    private final MeterRegistry registry;
+    
+    public MicrometerMetricsRecorder(MeterRegistry registry) {
+        this.registry = registry;
+    }
+    
+    @Override
+    public void recordDecision(
+        String name,
+        RateLimitPolicy policy,
+        RateLimitDecision decision,
+        Duration latency
+    ) {
+        // Record counter
+        Counter.builder("rate_limit.decisions")
+            .tag("name", name)
+            .tag("scope", policy.getScope())
+            .tag("allowed", String.valueOf(decision.isAllowed()))
+            .register(registry)
+            .increment();
+        
+        // Record latency
+        Timer.builder("rate_limit.evaluation.time")
+            .tag("name", name)
+            .tag("scope", policy.getScope())
+            .register(registry)
+            .record(latency);
+        
+        // Record specific denied counter
+        if (!decision.isAllowed()) {
+            Counter.builder("rate_limit.exceeded")
+                .tag("name", name)
+                .tag("scope", policy.getScope())
+                .register(registry)
+                .increment();
+        }
+    }
+    
+    @Override
+    public void recordError(
+        String name,
+        RateLimitPolicy policy,
+        Duration latency,
+        Throwable error
+    ) {
+        Counter.builder("rate_limit.errors")
+            .tag("name", name)
+            .tag("scope", policy.getScope())
+            .tag("error_type", error.getClass().getSimpleName())
+            .register(registry)
+            .increment();
+        
+        Timer.builder("rate_limit.error.time")
+            .tag("name", name)
+            .register(registry)
+            .record(latency);
+    }
+}
+```
+
+### No-op implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+
+public class NoOpMetricsRecorder implements RateLimitMetricsRecorder {
+    
+    @Override
+    public void recordDecision(
+        String name,
+        RateLimitPolicy policy,
+        RateLimitDecision decision,
+        Duration latency
+    ) {
+        // No-op - do nothing
+    }
+    
+    @Override
+    public void recordError(
+        String name,
+        RateLimitPolicy policy,
+        Duration latency,
+        Throwable error
+    ) {
+        // No-op - do nothing
+    }
+}
+```
+
+### Logging implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import java.time.Duration;
+
+public class LoggingMetricsRecorder implements RateLimitMetricsRecorder {
+    
+    private static final Logger log = LoggerFactory.getLogger(LoggingMetricsRecorder.class);
+    
+    @Override
+    public void recordDecision(
+        String name,
+        RateLimitPolicy policy,
+        RateLimitDecision decision,
+        Duration latency
+    ) {
+        if (decision.isAllowed()) {
+            log.debug(
+                "Rate limit check passed - name: {}, scope: {}, latency: {}ms",
+                name, policy.getScope(), latency.toMillis()
+            );
+        } else {
+            log.warn(
+                "Rate limit exceeded - name: {}, scope: {}, limit: {}, window: {}, latency: {}ms",
+                name, policy.getScope(), policy.getLimit(), 
+                policy.getWindow(), latency.toMillis()
+            );
+        }
+    }
+    
+    @Override
+    public void recordError(
+        String name,
+        RateLimitPolicy policy,
+        Duration latency,
+        Throwable error
+    ) {
+        log.error(
+            "Rate limit evaluation error - name: {}, scope: {}, latency: {}ms",
+            name, policy.getScope(), latency.toMillis(), error
+        );
+    }
+}
+```
+
+### Using with enforcer
+
+```java
+import io.github.v4runsharma.ratelimiter.core.*;
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.*;
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import java.time.Duration;
+import java.time.Instant;
+
+public class MetricsAwareEnforcer implements RateLimitEnforcer {
+    
+    private final RateLimiter rateLimiter;
+    private final RateLimitKeyResolver keyResolver;
+    private final RateLimitPolicyProvider policyProvider;
+    private final RateLimitMetricsRecorder metricsRecorder;
+    
+    public MetricsAwareEnforcer(
+        RateLimiter rateLimiter,
+        RateLimitKeyResolver keyResolver,
+        RateLimitPolicyProvider policyProvider,
+        RateLimitMetricsRecorder metricsRecorder
+    ) {
+        this.rateLimiter = rateLimiter;
+        this.keyResolver = keyResolver;
+        this.policyProvider = policyProvider;
+        this.metricsRecorder = metricsRecorder;
+    }
+    
+    @Override
+    public RateLimitDecision evaluate(RateLimitContext context) {
+        String key = keyResolver.resolveKey(context);
+        RateLimitPolicy policy = policyProvider.resolvePolicy(context);
+        String name = context.getAnnotation().name();
+        
+        Instant start = Instant.now();
+        
+        try {
+            RateLimitDecision decision = rateLimiter.evaluate(key, policy);
+            
+            Duration latency = Duration.between(start, Instant.now());
+            metricsRecorder.recordDecision(name, policy, decision, latency);
+            
+            return decision;
+            
+        } catch (Exception error) {
+            Duration latency = Duration.between(start, Instant.now());
+            metricsRecorder.recordError(name, policy, latency, error);
+            throw error;
+        }
+    }
+    
+    @Override
+    public void enforce(RateLimitContext context) throws RateLimitExceededException {
+        RateLimitDecision decision = evaluate(context);
+        
+        if (!decision.isAllowed()) {
+            String name = context.getAnnotation().name();
+            String key = keyResolver.resolveKey(context);
+            RateLimitPolicy policy = policyProvider.resolvePolicy(context);
+            
+            throw new RateLimitExceededException(name, key, policy, decision);
+        }
+    }
+}
+```
+
+### Custom metrics implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+public class CustomMetricsRecorder implements RateLimitMetricsRecorder {
+    
+    private final ConcurrentHashMap<String, Metrics> metricsMap = new ConcurrentHashMap<>();
+    
+    @Override
+    public void recordDecision(
+        String name,
+        RateLimitPolicy policy,
+        RateLimitDecision decision,
+        Duration latency
+    ) {
+        Metrics metrics = metricsMap.computeIfAbsent(
+            name, 
+            k -> new Metrics()
+        );
+        
+        metrics.totalRequests.incrementAndGet();
+        
+        if (decision.isAllowed()) {
+            metrics.allowedRequests.incrementAndGet();
+        } else {
+            metrics.deniedRequests.incrementAndGet();
+        }
+        
+        metrics.totalLatencyMs.addAndGet(latency.toMillis());
+    }
+    
+    @Override
+    public void recordError(
+        String name,
+        RateLimitPolicy policy,
+        Duration latency,
+        Throwable error
+    ) {
+        Metrics metrics = metricsMap.computeIfAbsent(
+            name, 
+            k -> new Metrics()
+        );
+        
+        metrics.errors.incrementAndGet();
+    }
+    
+    public void printStats() {
+        metricsMap.forEach((name, metrics) -> {
+            long total = metrics.totalRequests.get();
+            long allowed = metrics.allowedRequests.get();
+            long denied = metrics.deniedRequests.get();
+            long errors = metrics.errors.get();
+            long avgLatency = total > 0 ? metrics.totalLatencyMs.get() / total : 0;
+            
+            System.out.println("Metrics for: " + name);
+            System.out.println("  Total: " + total);
+            System.out.println("  Allowed: " + allowed);
+            System.out.println("  Denied: " + denied);
+            System.out.println("  Errors: " + errors);
+            System.out.println("  Avg Latency: " + avgLatency + "ms");
+        });
+    }
+    
+    private static class Metrics {
+        final AtomicLong totalRequests = new AtomicLong();
+        final AtomicLong allowedRequests = new AtomicLong();
+        final AtomicLong deniedRequests = new AtomicLong();
+        final AtomicLong errors = new AtomicLong();
+        final AtomicLong totalLatencyMs = new AtomicLong();
+    }
+}
+```
+
+### Configuration
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class MetricsConfig {
+    
+    @Bean
+    @ConditionalOnProperty(
+        name = "rate-limiter.metrics.enabled", 
+        havingValue = "true",
+        matchIfMissing = true
+    )
+    public RateLimitMetricsRecorder rateLimitMetricsRecorder(
+        MeterRegistry registry
+    ) {
+        return new MicrometerMetricsRecorder(registry);
+    }
+    
+    @Bean
+    @ConditionalOnProperty(
+        name = "rate-limiter.metrics.enabled", 
+        havingValue = "false"
+    )
+    public RateLimitMetricsRecorder noOpMetricsRecorder() {
+        return new NoOpMetricsRecorder();
+    }
+}
+```
+
+## Available implementations
+
+The library provides:
+
+### MicrometerRateLimitMetricsRecorder
+
+Production implementation that integrates with Micrometer for metrics recording.
+
+### NoOpRateLimitMetricsRecorder
+
+No-operation implementation that does nothing. Useful for disabling metrics in tests or when metrics are not needed.
+
+## Related
+
+- [RateLimitEnforcer](/api/core/rate-limit-enforcer) - Uses metrics recorder
+- [RateLimitDecision](/api/models/rate-limit-decision) - Recorded in metrics
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Provides context for metrics

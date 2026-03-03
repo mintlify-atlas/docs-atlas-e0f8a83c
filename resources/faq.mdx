@@ -1,0 +1,422 @@
+---
+title: FAQ
+description: Frequently asked questions about Spring Boot Redis Rate Limiter
+---
+
+## General questions
+
+<Accordion title="What is the difference between this and API gateway rate limiting?">
+  This starter provides **method-level rate limiting** inside your Spring Boot services, while API gateways provide **edge-level rate limiting** at the network boundary.
+
+  **Use cases for this starter:**
+  - Protect expensive internal operations (database queries, external API calls)
+  - Enforce business-specific limits (per-tenant, per-feature)
+  - Rate limit based on business context (user role, subscription tier)
+  - Protect service-to-service calls in microservices
+
+  **Use cases for API gateway:**
+  - Protect against DDoS attacks
+  - Enforce global API quotas
+  - Rate limit based on IP address or API key
+  - Protect all backend services uniformly
+
+  **Best practice:** Use both together. Gateway for edge protection, this starter for fine-grained business logic protection.
+</Accordion>
+
+<Accordion title="Which Spring Boot and Java versions are supported?">
+  **Requirements:**
+  - Java 17 or higher
+  - Spring Boot 3.x
+  - Redis 2.6+ (tested with Redis 7)
+
+  **Not supported:**
+  - Spring Boot 2.x (use Spring Boot 3.x)
+  - Java 11 or earlier (upgrade to Java 17+)
+</Accordion>
+
+<Accordion title="Does this work with Spring WebFlux/Reactive?">
+  Currently, the starter is designed for **Spring MVC (servlet-based)** applications.
+
+  The HTTP 429 exception handler specifically targets servlet environments. For WebFlux applications, you would need to:
+  - Use the core rate limiting functionality
+  - Implement custom exception handling for reactive contexts
+  - Consider contributing WebFlux support to the project
+</Accordion>
+
+<Accordion title="Can I use this without Redis?">
+  No, Redis is required. The starter uses Redis as the backing store for rate limit counters.
+
+  **Why Redis:**
+  - Fast atomic operations (INCR)
+  - Built-in TTL support for automatic key expiration
+  - Shared state across multiple application instances
+  - Production-proven for rate limiting use cases
+
+  **Alternatives:**
+  - For in-memory rate limiting (single instance), consider Bucket4j or Guava RateLimiter
+  - For other distributed backends, you would need to implement custom `RateLimiter` interface
+</Accordion>
+
+## Configuration questions
+
+<Accordion title="What happens when Redis is unavailable?">
+  The behavior depends on the `fail-open` configuration:
+
+  **Fail-closed (default):**
+  ```properties
+  ratelimiter.fail-open=false
+  ```
+  - Throws `RateLimiterBackendException`
+  - Request is rejected
+  - Safe for critical rate limiting
+
+  **Fail-open:**
+  ```properties
+  ratelimiter.fail-open=true
+  ```
+  - Logs error but allows request
+  - Useful for non-critical rate limiting
+  - Prevents Redis outage from breaking your service
+
+  **Recommendation:** Use fail-closed for production unless you have strong reasons to fail-open.
+</Accordion>
+
+<Accordion title="How do I disable rate limiting globally?">
+  Set the master toggle in your configuration:
+
+  ```properties
+  ratelimiter.enabled=false
+  ```
+
+  This disables the entire auto-configuration. No rate limiting will be enforced, even if methods have `@RateLimit` annotations.
+
+  **Alternative:** Use Spring profiles to disable in specific environments:
+  ```yaml
+  # application-dev.yml
+  ratelimiter:
+    enabled: false
+
+  # application-prod.yml
+  ratelimiter:
+    enabled: true
+  ```
+</Accordion>
+
+<Accordion title="Can I disable rate limiting for specific methods?">
+  Yes, use the `enabled` attribute on the annotation:
+
+  ```java
+  @RateLimit(
+      name = "test-operation",
+      scope = "GLOBAL",
+      limit = 10,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES,
+      enabled = false  // Disables this specific rate limit
+  )
+  public void someMethod() {
+    // Not rate limited
+  }
+  ```
+
+  This is useful for:
+  - Temporarily disabling limits during testing
+  - A/B testing rate limit configurations
+  - Gradual rollout of rate limiting
+</Accordion>
+
+<Accordion title="What rate limit headers are included in 429 responses?">
+  When `ratelimiter.include-http-headers=true` (default), the following headers are added:
+
+  - `Retry-After`: Seconds until the rate limit window resets
+  - `RateLimit-Limit`: Maximum requests allowed in the window
+  - `RateLimit-Remaining`: Requests remaining (0 when blocked)
+  - `RateLimit-Reset`: Unix timestamp when the window resets
+
+  **Example response:**
+  ```http
+  HTTP/1.1 429 Too Many Requests
+  Retry-After: 45
+  RateLimit-Limit: 10
+  RateLimit-Remaining: 0
+  RateLimit-Reset: 1709473245
+  Content-Type: application/problem+json
+
+  {
+    "type": "about:blank",
+    "title": "Rate limit exceeded",
+    "status": 429,
+    "detail": "Rate limit exceeded: invoice-create"
+  }
+  ```
+
+  To disable headers:
+  ```properties
+  ratelimiter.include-http-headers=false
+  ```
+</Accordion>
+
+## Implementation questions
+
+<Accordion title="How does the key resolution work?">
+  Keys are resolved by `RateLimitKeyResolver` implementations.
+
+  **Default resolver** (`DefaultRateLimitKeyResolver`):
+  - If `key` is set: `scope:key`
+  - If `key` is not set: `scope:fully.qualified.ClassName#methodName`
+
+  **Examples:**
+  ```java
+  // key = "global:com.example.BillingService#createInvoice"
+  @RateLimit(scope = "GLOBAL", limit = 10, duration = 1, timeUnit = TimeUnit.MINUTES)
+  public void createInvoice() { }
+
+  // key = "user:invoice-api"
+  @RateLimit(scope = "USER", key = "invoice-api", limit = 10, duration = 1, timeUnit = TimeUnit.MINUTES)
+  public void createInvoice() { }
+  ```
+
+  **Custom resolver:**
+  ```java
+  @Component
+  public class UserIdKeyResolver implements RateLimitKeyResolver {
+    @Override
+    public String resolveKey(RateLimitContext context) {
+      String userId = (String) context.getArguments()[0];
+      return "user:" + userId + ":" + context.getMethod().getName();
+    }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Can I apply multiple rate limits to the same method?">
+  Not directly with a single annotation, but you can layer limits using wrapper methods:
+
+  ```java
+  @Service
+  public class ApiService {
+
+    // Public method with per-minute limit
+    @RateLimit(
+        name = "api-per-minute",
+        scope = "USER",
+        keyResolver = UserIdKeyResolver.class,
+        limit = 10,
+        duration = 1,
+        timeUnit = TimeUnit.MINUTES
+    )
+    public String apiCall(String userId, String request) {
+      return apiCallHourly(userId, request);
+    }
+
+    // Internal method with per-hour limit
+    @RateLimit(
+        name = "api-per-hour",
+        scope = "USER",
+        keyResolver = UserIdKeyResolver.class,
+        limit = 100,
+        duration = 1,
+        timeUnit = TimeUnit.HOURS
+    )
+    public String apiCallHourly(String userId, String request) {
+      return processRequest(request);
+    }
+
+    private String processRequest(String request) {
+      // Actual logic
+      return "result";
+    }
+  }
+  ```
+
+  Both limits must be satisfied for the request to proceed.
+</Accordion>
+
+<Accordion title="How do I rate limit based on Spring Security user?">
+  Create a key resolver that extracts the user from Spring Security context:
+
+  ```java
+  import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+  import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+  import org.springframework.security.core.Authentication;
+  import org.springframework.security.core.context.SecurityContextHolder;
+  import org.springframework.stereotype.Component;
+
+  @Component
+  public class SecurityUserKeyResolver implements RateLimitKeyResolver {
+    @Override
+    public String resolveKey(RateLimitContext context) {
+      Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+      if (auth != null && auth.isAuthenticated()) {
+        String username = auth.getName();
+        return "user:" + username + ":" + context.getMethod().getName();
+      }
+      return "anonymous:" + context.getMethod().getName();
+    }
+  }
+  ```
+
+  Apply in your service:
+  ```java
+  @RateLimit(
+      name = "user-operation",
+      scope = "USER",
+      keyResolver = SecurityUserKeyResolver.class,
+      limit = 50,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  public void securedOperation() {
+    // Rate limited per authenticated user
+  }
+  ```
+</Accordion>
+
+<Accordion title="Can I customize the HTTP 429 response format?">
+  Yes, you can override the default exception handler:
+
+  ```java
+  import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+  import org.springframework.http.HttpStatus;
+  import org.springframework.http.ResponseEntity;
+  import org.springframework.web.bind.annotation.ExceptionHandler;
+  import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+  @RestControllerAdvice
+  public class CustomRateLimitExceptionHandler {
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<CustomErrorResponse> handleRateLimit(
+        RateLimitExceededException ex) {
+      
+      CustomErrorResponse response = new CustomErrorResponse(
+          "RATE_LIMIT_EXCEEDED",
+          "Too many requests. Please try again later.",
+          ex.getRetryAfterSeconds()
+      );
+
+      return ResponseEntity
+          .status(HttpStatus.TOO_MANY_REQUESTS)
+          .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+          .body(response);
+    }
+  }
+
+  record CustomErrorResponse(
+      String errorCode,
+      String message,
+      long retryAfter
+  ) {}
+  ```
+</Accordion>
+
+## Performance and scalability questions
+
+<Accordion title="What is the performance impact of rate limiting?">
+  The overhead is minimal:
+
+  **Per request:**
+  - 1-2 Redis commands (INCR, possibly EXPIRE)
+  - Typical latency: 1-5ms for local Redis, 10-20ms for remote
+  - No Lua scripts, just simple atomic operations
+
+  **Metrics:**
+  Use the built-in `ratelimiter.evaluate.latency` timer to monitor performance:
+  ```properties
+  ratelimiter.metrics-enabled=true
+  ```
+
+  **Optimization tips:**
+  - Use Redis in the same data center/region
+  - Configure connection pooling appropriately
+  - Monitor Redis memory and CPU usage
+</Accordion>
+
+<Accordion title="How many requests can this handle?">
+  The throughput is primarily limited by Redis performance:
+
+  **Redis single instance:**
+  - 50,000-100,000+ ops/sec typical
+  - INCR operations are very fast (O(1))
+
+  **Bottlenecks:**
+  - Network latency to Redis
+  - Redis server resources (CPU, memory, network)
+  - Application server resources
+
+  **Scaling strategies:**
+  - Use Redis Cluster for horizontal scaling
+  - Use Redis Sentinel for high availability
+  - Consider Redis caching for read-heavy workloads
+  - Use multiple Redis instances with sharding
+</Accordion>
+
+<Accordion title="Does this work in a multi-instance deployment?">
+  Yes, that's the primary use case.
+
+  Redis provides shared state across all application instances. Rate limits are enforced consistently regardless of which instance handles the request.
+
+  **Architecture:**
+  ```
+  [App Instance 1] ──┐
+  [App Instance 2] ──┼──> [Redis] (shared rate limit state)
+  [App Instance 3] ──┘
+  ```
+
+  **No special configuration needed** - just ensure all instances use the same Redis.
+</Accordion>
+
+## Monitoring and metrics questions
+
+<Accordion title="What metrics are available?">
+  When Micrometer is on the classpath and `ratelimiter.metrics-enabled=true`:
+
+  **Counters:**
+  - `ratelimiter.requests` - Total requests evaluated
+    - Tags: `name`, `scope`, `outcome` (allowed/blocked)
+  - `ratelimiter.errors` - Backend errors (Redis failures)
+    - Tags: `exception`
+
+  **Timers:**
+  - `ratelimiter.evaluate.latency` - Time to evaluate rate limit
+    - Tags: `name`, `scope`
+
+  **Example Prometheus query:**
+  ```promql
+  # Rate of blocked requests
+  rate(ratelimiter_requests_total{outcome="blocked"}[5m])
+
+  # 95th percentile latency
+  histogram_quantile(0.95, ratelimiter_evaluate_latency_seconds_bucket)
+  ```
+</Accordion>
+
+<Accordion title="How do I monitor rate limit effectiveness?">
+  **Key metrics to track:**
+
+  1. **Block rate:**
+     ```promql
+     rate(ratelimiter_requests_total{outcome="blocked"}[5m])
+     / rate(ratelimiter_requests_total[5m])
+     ```
+
+  2. **Top blocked operations:**
+     ```promql
+     topk(10, sum by (name) (ratelimiter_requests_total{outcome="blocked"}))
+     ```
+
+  3. **Redis errors:**
+     ```promql
+     rate(ratelimiter_errors_total[5m])
+     ```
+
+  4. **Latency trends:**
+     ```promql
+     histogram_quantile(0.99, ratelimiter_evaluate_latency_seconds_bucket)
+     ```
+
+  **Set up alerts for:**
+  - High block rate (may indicate attack or misconfigured limits)
+  - Redis connection errors
+  - High latency (Redis performance issues)
+</Accordion>

@@ -1,0 +1,332 @@
+---
+title: Contributing
+description: Guidelines for contributing to Spring Boot Redis Rate Limiter
+---
+
+## Welcome contributors
+
+Thank you for your interest in contributing to Spring Boot Redis Rate Limiter. We welcome contributions from the community, whether it's bug reports, feature requests, documentation improvements, or code contributions.
+
+## License
+
+This project is licensed under the **Apache License 2.0**. By contributing to this project, you agree that your contributions will be licensed under the same terms.
+
+Key points of the Apache 2.0 license:
+- Free to use, modify, and distribute
+- Patent grant included
+- Must preserve copyright and license notices
+- Changes must be documented
+- No trademark rights granted
+
+For full license text, see the [LICENSE file](https://github.com/v4runsharma/spring-boot-starter-redis-ratelimiter/blob/main/LICENSE) in the repository.
+
+## Ways to contribute
+
+### Report bugs
+
+If you find a bug, please open an issue on GitHub with:
+- Clear description of the problem
+- Steps to reproduce
+- Expected vs actual behavior
+- Environment details (Java version, Spring Boot version, Redis version)
+- Relevant logs or stack traces
+
+### Suggest features
+
+Feature requests are welcome. Please open an issue describing:
+- The use case or problem you're trying to solve
+- Proposed solution or API design
+- Any alternatives you've considered
+- Examples of how it would be used
+
+### Improve documentation
+
+Documentation improvements are always appreciated:
+- Fix typos or unclear explanations
+- Add more examples
+- Improve troubleshooting guides
+- Translate documentation
+
+### Contribute code
+
+Code contributions should:
+- Follow existing code style and conventions
+- Include unit tests for new functionality
+- Include integration tests where appropriate
+- Update documentation to reflect changes
+- Pass all existing tests
+
+## Development setup
+
+### Prerequisites
+
+- Java 17 or higher
+- Maven 3.8+
+- Git
+- Docker (for integration tests)
+
+### Clone the repository
+
+```bash
+git clone https://github.com/v4runsharma/spring-boot-starter-redis-ratelimiter.git
+cd spring-boot-starter-redis-ratelimiter
+```
+
+### Build the project
+
+```bash
+# Compile and run unit tests
+mvn clean install
+
+# Run integration tests (requires Docker)
+mvn verify -DrunITs=true
+```
+
+### Project structure
+
+```
+src/
+├── main/java/io/github/v4runsharma/ratelimiter/
+│   ├── annotation/          # @RateLimit annotation
+│   ├── aspect/              # AOP interceptor
+│   ├── config/              # Auto-configuration
+│   ├── core/                # Core interfaces
+│   ├── exception/           # Exception types and handlers
+│   ├── key/                 # Key resolver implementations
+│   ├── metrics/             # Metrics recording
+│   ├── model/               # Data models
+│   ├── redis/               # Redis implementation
+│   └── support/             # Support classes
+└── test/java/               # Unit and integration tests
+```
+
+## Code standards
+
+### Java style
+
+- Use Java 17 features where appropriate
+- Follow standard Java naming conventions
+- Keep methods focused and concise
+- Add Javadoc for public APIs
+- Use meaningful variable names
+
+### Testing
+
+**Unit tests:**
+- Test individual components in isolation
+- Use mocks for external dependencies
+- Follow AAA pattern (Arrange, Act, Assert)
+- Use descriptive test method names
+
+**Integration tests:**
+- Test end-to-end behavior
+- Use Testcontainers for Redis
+- Name test classes with `*IT` suffix
+- Clean up resources after tests
+
+Example:
+```java
+@Test
+void shouldBlockRequestWhenLimitExceeded() {
+  // Arrange
+  RateLimitPolicy policy = new RateLimitPolicy(2, Duration.ofMinutes(1), "GLOBAL");
+  String key = "test-key";
+
+  // Act
+  rateLimiter.evaluate(key, policy);  // 1st request
+  rateLimiter.evaluate(key, policy);  // 2nd request
+  RateLimitDecision decision = rateLimiter.evaluate(key, policy);  // 3rd request
+
+  // Assert
+  assertThat(decision.isAllowed()).isFalse();
+}
+```
+
+### Commit messages
+
+Follow conventional commit format:
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+**Types:**
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `test`: Test additions or changes
+- `refactor`: Code refactoring
+- `perf`: Performance improvements
+- `chore`: Build/tooling changes
+
+**Examples:**
+```
+feat(redis): add support for Redis Cluster
+
+Implement RedisClusterRateLimiter with consistent hashing
+for distributed rate limiting across cluster nodes.
+
+Closes #123
+```
+
+```
+fix(metrics): correct timer tags for blocked requests
+
+The outcome tag was not being set correctly for blocked
+requests, resulting in incorrect metrics.
+
+Fixes #456
+```
+
+## Pull request process
+
+1. **Fork the repository** and create a feature branch
+   ```bash
+   git checkout -b feature/my-new-feature
+   ```
+
+2. **Make your changes** following the code standards
+
+3. **Write or update tests** to cover your changes
+   ```bash
+   mvn test
+   mvn verify -DrunITs=true
+   ```
+
+4. **Update documentation** if needed
+   - README.md for user-facing changes
+   - Javadoc for API changes
+   - HOW_TO_USE.md for usage examples
+
+5. **Commit your changes** with clear commit messages
+
+6. **Push to your fork** and open a pull request
+   ```bash
+   git push origin feature/my-new-feature
+   ```
+
+7. **Fill out the PR template** with:
+   - Description of changes
+   - Related issue numbers
+   - Testing done
+   - Breaking changes (if any)
+
+8. **Wait for review** - maintainers will review and provide feedback
+
+9. **Address feedback** and update your PR as needed
+
+10. **Merge** - once approved, your PR will be merged
+
+## Testing guidelines
+
+### Unit tests
+
+Run unit tests frequently during development:
+```bash
+mvn test
+```
+
+### Integration tests
+
+Run integration tests before submitting PR:
+```bash
+mvn verify -DrunITs=true
+```
+
+Requirements:
+- Docker must be running
+- Testcontainers will automatically pull Redis image
+
+### Test coverage
+
+Aim for high test coverage:
+```bash
+mvn test jacoco:report
+# View report at target/site/jacoco/index.html
+```
+
+## Documentation
+
+### Code documentation
+
+- Add Javadoc for public classes and methods
+- Explain non-obvious behavior
+- Include examples in Javadoc where helpful
+
+Example:
+```java
+/**
+ * Resolves a stable rate limit key for an invocation.
+ * 
+ * <p>The returned key identifies the bucket to charge against.
+ * Different resolvers enable per-user, per-IP, or per-endpoint strategies.
+ * 
+ * @param context the rate limit context containing method and arguments
+ * @return a non-empty, stable key (same caller -> same key)
+ */
+String resolveKey(RateLimitContext context);
+```
+
+### User documentation
+
+Update relevant files:
+- `README.md` - Overview, installation, quick start
+- `HOW_TO_USE.md` - Detailed usage guide
+- `CHANGELOG.md` - Version history
+
+## Release process
+
+Releases are managed by project maintainers.
+
+### Versioning
+
+Follow [Semantic Versioning](https://semver.org/):
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
+
+### Release to Maven Central
+
+1. Update version in `pom.xml`
+2. Update `CHANGELOG.md`
+3. Create git tag
+   ```bash
+   git tag -a v1.0.0 -m "Release 1.0.0"
+   git push origin v1.0.0
+   ```
+4. Deploy to OSSRH
+   ```bash
+   mvn -DperformRelease=true -Prelease clean deploy
+   ```
+5. Close and release staging repository in Sonatype
+6. Publish release notes on GitHub
+
+## Getting help
+
+If you need help:
+- Check existing [issues](https://github.com/v4runsharma/spring-boot-starter-redis-ratelimiter/issues)
+- Review the [documentation](/introduction)
+- Ask questions in issue discussions
+- Review the [FAQ](/resources/faq)
+
+## Code of conduct
+
+Be respectful and constructive:
+- Use welcoming and inclusive language
+- Respect differing viewpoints and experiences
+- Accept constructive criticism gracefully
+- Focus on what's best for the community
+- Show empathy towards other community members
+
+## Recognition
+
+Contributors will be:
+- Listed in release notes
+- Acknowledged in the repository
+- Appreciated by the community
+
+Thank you for contributing to Spring Boot Redis Rate Limiter!

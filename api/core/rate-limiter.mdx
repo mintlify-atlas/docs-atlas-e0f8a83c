@@ -1,0 +1,133 @@
+---
+title: RateLimiter
+description: Core interface for evaluating rate limit decisions
+---
+
+## Overview
+
+The `RateLimiter` interface is the core abstraction for evaluating whether a request should be allowed based on a rate limit policy. Implementations typically use a backing store (like Redis) to track request counts.
+
+**Package:** `io.github.v4runsharma.ratelimiter.core`
+
+**Source:** `RateLimiter.java:7`
+
+## Methods
+
+### evaluate
+
+```java
+RateLimitDecision evaluate(String key, RateLimitPolicy policy)
+```
+
+Evaluates a rate limit for a given key and policy.
+
+<ParamField path="key" type="String" required>
+  The rate limit bucket key identifying the caller or resource. Should be stable and unique per bucket (e.g., "user:123", "ip:192.168.1.1").
+</ParamField>
+
+<ParamField path="policy" type="RateLimitPolicy" required>
+  The rate limit policy to enforce, containing the limit, window duration, and scope.
+</ParamField>
+
+<ResponseField name="return" type="RateLimitDecision">
+  A decision object indicating whether the request is allowed, along with retry timing information.
+</ResponseField>
+
+## Usage example
+
+### Direct usage
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+public class RateLimitService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public RateLimitService(RateLimiter rateLimiter) {
+        this.rateLimiter = rateLimiter;
+    }
+    
+    public boolean checkLimit(String userId) {
+        // Create a policy: 100 requests per minute
+        RateLimitPolicy policy = new RateLimitPolicy(
+            100, 
+            Duration.ofMinutes(1), 
+            "user"
+        );
+        
+        // Evaluate the rate limit
+        String key = "user:" + userId;
+        RateLimitDecision decision = rateLimiter.evaluate(key, policy);
+        
+        if (decision.isAllowed()) {
+            System.out.println("Request allowed");
+            return true;
+        } else {
+            System.out.println("Rate limit exceeded. Retry after: " 
+                + decision.getRetryAfterMillis() + "ms");
+            return false;
+        }
+    }
+}
+```
+
+### Custom implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+
+public class InMemoryRateLimiter implements RateLimiter {
+    
+    private final Map<String, AtomicInteger> buckets = new ConcurrentHashMap<>();
+    
+    @Override
+    public RateLimitDecision evaluate(String key, RateLimitPolicy policy) {
+        AtomicInteger counter = buckets.computeIfAbsent(
+            key, 
+            k -> new AtomicInteger(0)
+        );
+        
+        int current = counter.incrementAndGet();
+        boolean allowed = current <= policy.getLimit();
+        
+        if (allowed) {
+            return new RateLimitDecision(true, 0, null, null);
+        } else {
+            long retryAfter = policy.getWindow().toMillis();
+            return new RateLimitDecision(
+                false, 
+                retryAfter, 
+                policy.getWindow(), 
+                policy.getWindow()
+            );
+        }
+    }
+}
+```
+
+## Implementations
+
+The library provides the following implementations:
+
+### RedisRateLimiter
+
+Production-ready implementation using Redis with sliding window algorithm:
+
+```java
+import io.github.v4runsharma.ratelimiter.redis.RedisRateLimiter;
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+RedisRateLimiter rateLimiter = new RedisRateLimiter(redisTemplate);
+```
+
+## Related
+
+- [RateLimitEnforcer](/api/core/rate-limit-enforcer) - High-level enforcement orchestration
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Policy model
+- [RateLimitDecision](/api/models/rate-limit-decision) - Decision result

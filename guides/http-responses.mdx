@@ -1,0 +1,394 @@
+---
+title: HTTP responses
+description: Understand the 429 Too Many Requests response format and headers returned when rate limits are exceeded
+---
+
+When a rate limit is exceeded, the library throws a `RateLimitExceededException`, which is automatically converted to an HTTP 429 (Too Many Requests) response by the `RateLimitExceptionHandler`.
+
+## Response format
+
+The exception handler (from `exception/RateLimitExceptionHandler.java:18-61`) returns a standardized RFC 7807 Problem Detail response.
+
+### Example response
+
+```json
+{
+  "type": "about:blank",
+  "title": "Rate limit exceeded",
+  "status": 429,
+  "detail": "Rate limit exceeded for key: user:john:getData",
+  "instance": null,
+  "timestamp": "2024-03-15T10:30:45.123Z",
+  "key": "user:john:getData",
+  "limit": 10,
+  "windowSeconds": 60,
+  "name": "api-data",
+  "retryAfterSeconds": 45
+}
+```
+
+### Response body fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Problem type URI (always "about:blank" for generic errors) |
+| `title` | string | Human-readable summary (always "Rate limit exceeded") |
+| `status` | integer | HTTP status code (always 429) |
+| `detail` | string | Detailed error message including the rate limit key |
+| `timestamp` | string | ISO 8601 timestamp when the error occurred |
+| `key` | string | The rate limit key that was exceeded |
+| `limit` | integer | Maximum requests allowed in the window |
+| `windowSeconds` | integer | Time window duration in seconds |
+| `name` | string | Optional logical name from `@RateLimit(name = "...")` |
+| `retryAfterSeconds` | integer | Seconds until the rate limit resets |
+
+## HTTP headers
+
+The response includes standard rate limit headers when `ratelimiter.include-http-headers` is enabled (default: true).
+
+### Headers included
+
+**From the implementation** (exception/RateLimitExceptionHandler.java:45-51):
+
+```java
+HttpHeaders headers = new HttpHeaders();
+if (includeHttpHeaders) {
+    headers.set(HttpHeaders.RETRY_AFTER, Long.toString(retryAfterSeconds));
+    headers.set("RateLimit-Limit", Integer.toString(ex.getPolicy().getLimit()));
+    headers.set("RateLimit-Remaining", "0");
+    headers.set("RateLimit-Reset", Long.toString(retryAfterSeconds));
+}
+```
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `Retry-After` | integer | Seconds to wait before retrying (standard HTTP header) |
+| `RateLimit-Limit` | integer | Maximum requests allowed in the window |
+| `RateLimit-Remaining` | integer | Requests remaining in current window (always 0 when blocked) |
+| `RateLimit-Reset` | integer | Seconds until the rate limit resets |
+
+### Example headers
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 45
+RateLimit-Limit: 10
+RateLimit-Remaining: 0
+RateLimit-Reset: 45
+```
+
+## Configuration
+
+### Disable HTTP headers
+
+You can disable the rate limit headers while keeping the response body:
+
+```yaml
+# application.yml
+ratelimiter:
+  include-http-headers: false
+```
+
+With headers disabled, only the Problem Detail JSON body is returned.
+
+### Constructor implementation
+
+The configuration is injected via constructor (from `exception/RateLimitExceptionHandler.java:20-25`):
+
+```java
+private final boolean includeHttpHeaders;
+
+public RateLimitExceptionHandler(
+    @Value("${ratelimiter.include-http-headers:true}") boolean includeHttpHeaders
+) {
+    this.includeHttpHeaders = includeHttpHeaders;
+}
+```
+
+## Retry-After calculation
+
+The `Retry-After` header is calculated from the rate limit decision (from `exception/RateLimitExceptionHandler.java:56-60`):
+
+```java
+private static long resolveRetryAfterSeconds(
+    RateLimitDecision decision, 
+    Duration fallbackWindow
+) {
+    Duration retryAfter = decision.getRetryAfter().orElse(fallbackWindow);
+    long seconds = retryAfter.toSeconds();
+    return Math.max(1L, seconds);  // Always at least 1 second
+}
+```
+
+The calculation:
+1. Uses the `retryAfter` duration from the rate limit decision if available
+2. Falls back to the full window duration
+3. Ensures a minimum of 1 second
+
+## Client-side handling
+
+### JavaScript/TypeScript example
+
+```typescript
+async function fetchWithRetry(url: string): Promise<Response> {
+  const response = await fetch(url);
+  
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    const body = await response.json();
+    
+    console.error('Rate limit exceeded:', {
+      message: body.detail,
+      limit: body.limit,
+      window: body.windowSeconds,
+      retryAfter: retryAfter || body.retryAfterSeconds
+    });
+    
+    // Wait and retry
+    const waitSeconds = parseInt(retryAfter || body.retryAfterSeconds);
+    await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+    
+    return fetchWithRetry(url);
+  }
+  
+  return response;
+}
+```
+
+### Java RestTemplate example
+
+```java
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.RestTemplate;
+
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+public class RateLimitAwareClient {
+
+    private final RestTemplate restTemplate;
+    
+    public RateLimitAwareClient(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
+    
+    public String fetchWithRetry(String url) {
+        try {
+            return restTemplate.getForObject(url, String.class);
+        } catch (HttpClientErrorException ex) {
+            if (ex.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS) {
+                Map<String, Object> body = ex.getResponseBodyAs(Map.class);
+                Integer retryAfter = (Integer) body.get("retryAfterSeconds");
+                
+                System.err.println("Rate limited. Waiting " + retryAfter + " seconds...");
+                
+                try {
+                    TimeUnit.SECONDS.sleep(retryAfter);
+                    return fetchWithRetry(url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            }
+            throw ex;
+        }
+    }
+}
+```
+
+### Python requests example
+
+```python
+import requests
+import time
+from typing import Dict, Any
+
+def fetch_with_retry(url: str) -> Dict[str, Any]:
+    response = requests.get(url)
+    
+    if response.status_code == 429:
+        retry_after = response.headers.get('Retry-After')
+        body = response.json()
+        
+        wait_seconds = int(retry_after or body['retryAfterSeconds'])
+        print(f"Rate limited. Waiting {wait_seconds} seconds...")
+        
+        time.sleep(wait_seconds)
+        return fetch_with_retry(url)
+    
+    response.raise_for_status()
+    return response.json()
+```
+
+## Custom exception handler
+
+You can customize the response format by providing your own exception handler:
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ControllerAdvice;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+
+import java.time.Instant;
+import java.util.Map;
+
+@ControllerAdvice
+public class CustomRateLimitExceptionHandler {
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleRateLimitExceeded(
+        RateLimitExceededException ex
+    ) {
+        long retryAfter = ex.getDecision()
+            .getRetryAfter()
+            .orElse(ex.getPolicy().getWindow())
+            .toSeconds();
+        
+        Map<String, Object> body = Map.of(
+            "error", "rate_limit_exceeded",
+            "message", "You have exceeded the rate limit",
+            "limit", ex.getPolicy().getLimit(),
+            "window_seconds", ex.getPolicy().getWindow().toSeconds(),
+            "retry_after_seconds", retryAfter,
+            "timestamp", Instant.now().toString()
+        );
+        
+        return ResponseEntity
+            .status(HttpStatus.TOO_MANY_REQUESTS)
+            .header("Retry-After", String.valueOf(retryAfter))
+            .body(body);
+    }
+}
+```
+
+## Testing 429 responses
+
+Test that your application correctly returns 429 responses:
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class RateLimitResponseTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void shouldReturn429WhenRateLimitExceeded() throws Exception {
+        // Make requests until rate limit is hit
+        for (int i = 0; i < 10; i++) {
+            mockMvc.perform(get("/api/data"));
+        }
+        
+        // Next request should be rate limited
+        mockMvc.perform(get("/api/data"))
+            .andExpect(status().isTooManyRequests())
+            .andExpect(header().exists("Retry-After"))
+            .andExpect(header().exists("RateLimit-Limit"))
+            .andExpect(jsonPath("$.title").value("Rate limit exceeded"))
+            .andExpect(jsonPath("$.status").value(429))
+            .andExpect(jsonPath("$.limit").value(10))
+            .andExpect(jsonPath("$.retryAfterSeconds").isNumber());
+    }
+}
+```
+
+## Best practices
+
+### Always respect Retry-After
+
+Clients should always honor the `Retry-After` header to avoid making unnecessary requests:
+
+```java
+String retryAfter = response.getHeader("Retry-After");
+if (retryAfter != null) {
+    int seconds = Integer.parseInt(retryAfter);
+    Thread.sleep(seconds * 1000);
+}
+```
+
+### Implement exponential backoff
+
+For additional safety, implement exponential backoff:
+
+```java
+public class ExponentialBackoffClient {
+    
+    public Response fetchWithBackoff(String url, int maxRetries) {
+        int retries = 0;
+        int baseDelay = 1;
+        
+        while (retries < maxRetries) {
+            Response response = makeRequest(url);
+            
+            if (response.getStatus() != 429) {
+                return response;
+            }
+            
+            int retryAfter = response.getHeader("Retry-After");
+            int delay = Math.max(retryAfter, baseDelay * (1 << retries));
+            
+            sleep(delay);
+            retries++;
+        }
+        
+        throw new RuntimeException("Max retries exceeded");
+    }
+}
+```
+
+### Log rate limit violations
+
+Monitor and log when rate limits are hit:
+
+```java
+@ControllerAdvice
+public class LoggingRateLimitExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(
+        LoggingRateLimitExceptionHandler.class
+    );
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ProblemDetail> handle(RateLimitExceededException ex) {
+        log.warn("Rate limit exceeded: key={}, limit={}, window={}",
+            ex.getKey(),
+            ex.getPolicy().getLimit(),
+            ex.getPolicy().getWindow()
+        );
+        
+        // Delegate to default handler
+        return defaultHandler.handleRateLimitExceeded(ex);
+    }
+}
+```
+
+### Include helpful error messages
+
+Provide clear messages that help users understand what happened:
+
+```java
+String detail = String.format(
+    "You have made %d requests in the last %d seconds. " +
+    "The limit is %d requests per %d seconds. " +
+    "Please wait %d seconds before trying again.",
+    currentCount,
+    windowSeconds,
+    limit,
+    windowSeconds,
+    retryAfterSeconds
+);
+```

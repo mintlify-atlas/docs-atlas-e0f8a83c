@@ -1,0 +1,423 @@
+---
+title: RateLimitExceededException
+description: Exception thrown when a rate limit is exceeded
+---
+
+## Overview
+
+The `RateLimitExceededException` is thrown when an invocation is not allowed by the current rate limit policy. Applications typically translate this to HTTP 429 (Too Many Requests).
+
+**Package:** `io.github.v4runsharma.ratelimiter.exception`
+
+**Source:** `RateLimitExceededException.java:15`
+
+## Constructors
+
+### Constructor (without name)
+
+```java
+public RateLimitExceededException(
+    String key,
+    RateLimitPolicy policy,
+    RateLimitDecision decision
+)
+```
+
+Creates an exception without a logical name.
+
+<ParamField path="key" type="String" required>
+  The resolved bucket key that was rate limited. Must not be null or blank.
+</ParamField>
+
+<ParamField path="policy" type="RateLimitPolicy" required>
+  The policy that was enforced. Must not be null.
+</ParamField>
+
+<ParamField path="decision" type="RateLimitDecision" required>
+  The decision details (retryAfter/resetAfter/remaining if known). Must not be null and `isAllowed()` must be `false`.
+</ParamField>
+
+**Throws:** `IllegalArgumentException` if:
+- `key` is null or blank
+- `policy` is null
+- `decision` is null
+- `decision.isAllowed()` is `true`
+
+**Source:** `RateLimitExceededException.java:25-27`
+
+### Constructor (with name)
+
+```java
+public RateLimitExceededException(
+    String name,
+    String key,
+    RateLimitPolicy policy,
+    RateLimitDecision decision
+)
+```
+
+Creates an exception with an optional logical name.
+
+<ParamField path="name" type="String">
+  Optional logical name for the limit. Can be null or blank.
+</ParamField>
+
+<ParamField path="key" type="String" required>
+  The resolved bucket key that was rate limited. Must not be null or blank.
+</ParamField>
+
+<ParamField path="policy" type="RateLimitPolicy" required>
+  The policy that was enforced. Must not be null.
+</ParamField>
+
+<ParamField path="decision" type="RateLimitDecision" required>
+  The decision details. Must not be null and `isAllowed()` must be `false`.
+</ParamField>
+
+**Source:** `RateLimitExceededException.java:29-38`
+
+## Properties
+
+### getName
+
+```java
+public String getName()
+```
+
+<ResponseField name="return" type="String">
+  Optional logical name for the limit (may be null).
+</ResponseField>
+
+**Source:** `RateLimitExceededException.java:41-43`
+
+### getKey
+
+```java
+public String getKey()
+```
+
+<ResponseField name="return" type="String">
+  The resolved bucket key that was rate limited.
+</ResponseField>
+
+**Source:** `RateLimitExceededException.java:46-48`
+
+### getPolicy
+
+```java
+public RateLimitPolicy getPolicy()
+```
+
+<ResponseField name="return" type="RateLimitPolicy">
+  The policy that was enforced.
+</ResponseField>
+
+**Source:** `RateLimitExceededException.java:51-53`
+
+### getDecision
+
+```java
+public RateLimitDecision getDecision()
+```
+
+<ResponseField name="return" type="RateLimitDecision">
+  Decision details including retryAfter, resetAfter, and remaining time if known.
+</ResponseField>
+
+**Source:** `RateLimitExceededException.java:56-58`
+
+## Usage examples
+
+### Basic exception handling
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import io.github.v4runsharma.ratelimiter.core.RateLimitEnforcer;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+
+public class ServiceLayer {
+    
+    private final RateLimitEnforcer enforcer;
+    
+    public void processRequest(RateLimitContext context) {
+        try {
+            enforcer.enforce(context);
+            
+            // Process the request
+            doBusinessLogic();
+            
+        } catch (RateLimitExceededException ex) {
+            System.err.println("Rate limit exceeded: " + ex.getMessage());
+            
+            // Get retry information
+            long retryAfterMs = ex.getDecision().getRetryAfterMillis();
+            System.err.println("Retry after: " + retryAfterMs + "ms");
+            
+            throw ex; // Re-throw for global handler
+        }
+    }
+    
+    private void doBusinessLogic() {
+        // Business logic implementation
+    }
+}
+```
+
+### REST exception handler
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class RateLimitExceptionHandler {
+    
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimitExceeded(
+        RateLimitExceededException ex
+    ) {
+        // Build error response
+        ErrorResponse error = new ErrorResponse(
+            "rate_limit_exceeded",
+            ex.getMessage(),
+            ex.getKey()
+        );
+        
+        // Add retry headers
+        HttpHeaders headers = new HttpHeaders();
+        
+        long retryAfterSeconds = ex.getDecision().getRetryAfterMillis() / 1000;
+        if (retryAfterSeconds > 0) {
+            headers.set("Retry-After", String.valueOf(retryAfterSeconds));
+        }
+        
+        // Add custom headers
+        headers.set("X-RateLimit-Limit", 
+            String.valueOf(ex.getPolicy().getLimit()));
+        headers.set("X-RateLimit-Window", 
+            ex.getPolicy().getWindow().toString());
+        
+        ex.getDecision().getResetAfter().ifPresent(duration -> 
+            headers.set("X-RateLimit-Reset", 
+                String.valueOf(System.currentTimeMillis() + duration.toMillis()))
+        );
+        
+        return new ResponseEntity<>(error, headers, HttpStatus.TOO_MANY_REQUESTS);
+    }
+    
+    public record ErrorResponse(
+        String code,
+        String message,
+        String rateLimitKey
+    ) { }
+}
+```
+
+### Logging exception details
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class RateLimitLogger {
+    
+    private static final Logger log = LoggerFactory.getLogger(RateLimitLogger.class);
+    
+    public void logRateLimitExceeded(RateLimitExceededException ex) {
+        log.warn("Rate limit exceeded - Name: {}, Key: {}, Limit: {}, Window: {}, Retry: {}ms",
+            ex.getName(),
+            ex.getKey(),
+            ex.getPolicy().getLimit(),
+            ex.getPolicy().getWindow(),
+            ex.getDecision().getRetryAfterMillis()
+        );
+        
+        // Log additional decision details
+        ex.getDecision().getRetryAfter().ifPresent(duration ->
+            log.debug("Retry after duration: {}", duration)
+        );
+        
+        ex.getDecision().getResetAfter().ifPresent(duration ->
+            log.debug("Reset after duration: {}", duration)
+        );
+    }
+}
+```
+
+### Creating the exception
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+public class EnforcerExample {
+    
+    public void enforceLimit() {
+        // Create policy
+        RateLimitPolicy policy = new RateLimitPolicy(
+            100,
+            Duration.ofMinutes(1),
+            "user"
+        );
+        
+        // Create decision (denied)
+        RateLimitDecision decision = new RateLimitDecision(
+            false,
+            30000,
+            Duration.ofSeconds(30),
+            Duration.ofMinutes(1)
+        );
+        
+        // Throw exception without name
+        throw new RateLimitExceededException(
+            "user:123",
+            policy,
+            decision
+        );
+    }
+    
+    public void enforceNamedLimit() {
+        RateLimitPolicy policy = new RateLimitPolicy(
+            1000,
+            Duration.ofHours(1),
+            "ip"
+        );
+        
+        RateLimitDecision decision = new RateLimitDecision(
+            false,
+            60000,
+            Duration.ofMinutes(1),
+            Duration.ofHours(1)
+        );
+        
+        // Throw exception with name
+        throw new RateLimitExceededException(
+            "public-api-limit",
+            "ip:192.168.1.1",
+            policy,
+            decision
+        );
+    }
+}
+```
+
+### Metrics recording
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+
+public class RateLimitMetrics {
+    
+    private final Counter rateLimitExceededCounter;
+    
+    public RateLimitMetrics(MeterRegistry registry) {
+        this.rateLimitExceededCounter = Counter.builder("rate_limit.exceeded")
+            .description("Number of rate limit exceeded events")
+            .register(registry);
+    }
+    
+    public void recordException(RateLimitExceededException ex) {
+        rateLimitExceededCounter.increment();
+        
+        // Record with tags
+        Counter.builder("rate_limit.exceeded")
+            .tag("name", ex.getName() != null ? ex.getName() : "unknown")
+            .tag("scope", ex.getPolicy().getScope())
+            .register(registry)
+            .increment();
+    }
+}
+```
+
+### Retry mechanism
+
+```java
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import java.util.concurrent.TimeUnit;
+
+public class RetryableService {
+    
+    private final RateLimitEnforcer enforcer;
+    private final int maxRetries;
+    
+    public RetryableService(RateLimitEnforcer enforcer, int maxRetries) {
+        this.enforcer = enforcer;
+        this.maxRetries = maxRetries;
+    }
+    
+    public void executeWithRetry(RateLimitContext context) {
+        int attempt = 0;
+        
+        while (attempt < maxRetries) {
+            try {
+                enforcer.enforce(context);
+                
+                // Execute business logic
+                processRequest();
+                return;
+                
+            } catch (RateLimitExceededException ex) {
+                attempt++;
+                
+                if (attempt >= maxRetries) {
+                    throw ex; // Give up after max retries
+                }
+                
+                long retryAfterMs = ex.getDecision().getRetryAfterMillis();
+                
+                if (retryAfterMs > 0 && 
+                    retryAfterMs != RateLimitDecision.REMAINING_TIME_UNKNOWN) {
+                    
+                    System.out.println("Rate limited. Retrying after " 
+                        + retryAfterMs + "ms (attempt " + attempt + ")");
+                    
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(retryAfterMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Retry interrupted", e);
+                    }
+                } else {
+                    throw ex; // Can't determine retry time
+                }
+            }
+        }
+    }
+    
+    private void processRequest() {
+        // Business logic
+    }
+}
+```
+
+## Message format
+
+The exception message format is:
+
+```
+Rate limit exceeded: {name or key} (limit={limit}, window={window}, remaining={remainingMs})
+```
+
+Example messages:
+
+```
+Rate limit exceeded: user:123 (limit=100, window=PT1M, remaining=30000)
+Rate limit exceeded: public-api-limit (limit=1000, window=PT1H, remaining=60000)
+```
+
+**Source:** `RateLimitExceededException.java:60-66`
+
+## Related
+
+- [RateLimitEnforcer](/api/core/rate-limit-enforcer) - Throws this exception
+- [RateLimitDecision](/api/models/rate-limit-decision) - Contains retry timing
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Policy that was enforced

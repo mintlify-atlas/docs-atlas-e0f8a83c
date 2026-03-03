@@ -1,0 +1,197 @@
+---
+title: DefaultRateLimitKeyResolver
+description: Default implementation for resolving rate limit keys
+---
+
+## Overview
+
+The `DefaultRateLimitKeyResolver` is the default implementation that creates stable keys from scope and annotation/method metadata. It constructs keys in the format `scope:identifier`.
+
+**Package:** `io.github.v4runsharma.ratelimiter.key`
+
+**Source:** `DefaultRateLimitKeyResolver.java:11`
+
+## Key format
+
+Keys follow the pattern:
+
+```
+scope:identifier
+```
+
+Where:
+- `scope` is normalized from the annotation's scope parameter (defaults to "global")
+- `identifier` is either:
+  - The annotation's `key` parameter (if provided)
+  - Or `className#methodName` (fully qualified class name + method name)
+
+## Methods
+
+### resolveKey
+
+```java
+public String resolveKey(RateLimitContext context)
+```
+
+Resolves a stable key from the invocation context.
+
+**Implementation logic:**
+1. Normalize scope from annotation (default: "global")
+2. If annotation has a static `key` parameter, use it
+3. Otherwise, use `className#methodName`
+
+<ParamField path="context" type="RateLimitContext" required>
+  The invocation context. Must not be null and must contain a non-null annotation.
+</ParamField>
+
+<ResponseField name="return" type="String">
+  A stable key string in the format `scope:identifier`.
+</ResponseField>
+
+**Source:** `DefaultRateLimitKeyResolver.java:14-24`
+
+## Usage examples
+
+### With default scope and no key
+
+```java
+@RateLimit(limit = 10, duration = 1)
+public void processOrder() {
+    // ...
+}
+```
+
+**Resolved key:** `global:com.example.OrderService#processOrder`
+
+### With user scope and no key
+
+```java
+@RateLimit(
+    scope = "user",
+    limit = 100,
+    duration = 1
+)
+public void getUserData(String userId) {
+    // ...
+}
+```
+
+**Resolved key:** `user:com.example.UserService#getUserData`
+
+### With static key
+
+```java
+@RateLimit(
+    scope = "ip",
+    key = "public-api",
+    limit = 1000,
+    duration = 1
+)
+public void publicEndpoint() {
+    // ...
+}
+```
+
+**Resolved key:** `ip:public-api`
+
+### With IP scope
+
+```java
+@RateLimit(
+    scope = "ip",
+    limit = 50,
+    duration = 60
+)
+public void rateLimitedEndpoint() {
+    // ...
+}
+```
+
+**Resolved key:** `ip:com.example.ApiController#rateLimitedEndpoint`
+
+## Key generation rules
+
+### Scope normalization
+
+```java
+private static String normalizeScope(String rawScope)
+```
+
+The scope is normalized using these rules:
+1. If null or blank → defaults to `"global"`
+2. Converted to uppercase and matched against `RateLimitScope` enum
+3. Returned in lowercase (e.g., "USER" → "user")
+
+**Source:** `DefaultRateLimitKeyResolver.java:26-31`
+
+### Identifier resolution
+
+1. **With static key:**
+   ```java
+   scope + ":" + annotation.key().trim()
+   ```
+
+2. **Without static key:**
+   ```java
+   scope + ":" + targetClass.getName() + "#" + method.getName()
+   ```
+
+## Complete example
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+    
+    // Key: global:com.example.UserController#getAllUsers
+    @RateLimit(limit = 100, duration = 1)
+    @GetMapping
+    public List<User> getAllUsers() {
+        return userService.findAll();
+    }
+    
+    // Key: user:com.example.UserController#getUserById
+    @RateLimit(
+        scope = "user",
+        limit = 50,
+        duration = 1
+    )
+    @GetMapping("/{id}")
+    public User getUserById(@PathVariable String id) {
+        return userService.findById(id);
+    }
+    
+    // Key: user:premium-api
+    @RateLimit(
+        scope = "user",
+        key = "premium-api",
+        limit = 1000,
+        duration = 60
+    )
+    @PostMapping("/premium")
+    public Response premiumEndpoint(@RequestBody Request req) {
+        return premiumService.process(req);
+    }
+}
+```
+
+## When to use custom resolver
+
+Consider implementing a custom `RateLimitKeyResolver` when you need:
+
+- **Dynamic key components:** Include runtime values like user ID from authentication context
+- **IP-based limiting:** Extract client IP from request headers
+- **API key limiting:** Use API key from request headers
+- **Parameter-based keys:** Include method parameter values in the key
+- **Complex composite keys:** Combine multiple contextual elements
+
+See [RateLimitKeyResolver](/api/key/rate-limit-key-resolver) for custom implementation examples.
+
+## Related
+
+- [RateLimitKeyResolver](/api/key/rate-limit-key-resolver) - Interface and custom implementations
+- [RateLimitScope](/api/models/rate-limit-scope) - Available scope values
+- [@RateLimit](/api/annotations/rate-limit) - Annotation with scope and key parameters

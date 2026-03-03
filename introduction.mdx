@@ -1,0 +1,172 @@
+---
+title: Spring Boot Redis Rate Limiter
+description: A lightweight Spring Boot starter for annotation-driven rate limiting backed by Redis
+---
+
+# Spring Boot Redis Rate Limiter
+
+A production-ready Spring Boot starter that provides annotation-driven rate limiting backed by Redis. Protect your service methods with simple annotations and let the starter handle throttling, metrics, and HTTP responses.
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get up and running in minutes with a working example
+  </Card>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Add the dependency to your Spring Boot project
+  </Card>
+  <Card
+    title="GitHub repository"
+    icon="github"
+    href="https://github.com/V4run-Sharma/spring-boot-starter-redis-ratelimiter"
+  >
+    View source code and contribute
+  </Card>
+  <Card
+    title="Maven Central"
+    icon="box"
+    href="https://central.sonatype.com/artifact/io.github.v4run-sharma/spring-boot-starter-redis-ratelimiter"
+  >
+    Browse published releases
+  </Card>
+</CardGroup>
+
+## Why this starter
+
+In distributed systems, not all limits belong at the edge. Internal service methods often need their own protection based on business keys, tenants, users, or operation type.
+
+This starter standardizes method-level rate limiting so teams avoid duplicating AOP, Redis keying logic, HTTP handling, and metrics wiring in every service.
+
+<Note>
+This starter complements API Gateway-level rate limiting by enabling method-level protection inside services. It does not replace gateway throttling.
+</Note>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Annotation-driven" icon="at">
+    Use `@RateLimit` on methods or classes for declarative throttling
+  </Card>
+  <Card title="Redis-backed" icon="database">
+    Fixed-window implementation using `INCR` + TTL with no Lua scripts
+  </Card>
+  <Card title="Auto-configured" icon="wand-magic-sparkles">
+    Zero manual wiring with Spring Boot 3.x auto-configuration
+  </Card>
+  <Card title="HTTP 429 handling" icon="hand">
+    Automatic HTTP 429 responses with RFC 7807 Problem Detail format
+  </Card>
+  <Card title="Pluggable strategies" icon="puzzle-piece">
+    Custom key resolution and policy providers for advanced use cases
+  </Card>
+  <Card title="Micrometer metrics" icon="chart-line">
+    Built-in metrics for allowed, blocked, and error outcomes
+  </Card>
+  <Card title="Fail-open support" icon="shield-check">
+    Configurable behavior when Redis is unavailable
+  </Card>
+  <Card title="Rate limit headers" icon="table-list">
+    Optional `Retry-After` and `RateLimit-*` headers on 429 responses
+  </Card>
+</CardGroup>
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="Java 17+" icon="mug-hot">
+    Requires Java 17 or higher
+  </Card>
+  <Card title="Spring Boot 3.x" icon="leaf">
+    Compatible with Spring Boot 3.x
+  </Card>
+  <Card title="Redis" icon="database">
+    Redis instance accessible to your app
+  </Card>
+</CardGroup>
+
+## How it works
+
+The starter uses Spring AOP to intercept methods annotated with `@RateLimit`. When a method is called:
+
+1. The AOP interceptor detects the `@RateLimit` annotation
+2. The policy provider resolves the rate limit configuration (limit, window duration)
+3. The key resolver generates a Redis bucket key based on scope and method metadata
+4. The Redis rate limiter evaluates the request using `INCR` + TTL operations
+5. If allowed, the method executes normally
+6. If blocked, a `RateLimitExceededException` is thrown
+7. The exception handler converts it to an HTTP 429 response with Problem Detail body
+8. Micrometer metrics are recorded for monitoring
+
+<Tip>
+The fixed-window implementation uses simple Redis `INCR` and `EXPIRE` commands, making it easy to understand and debug without complex Lua scripts.
+</Tip>
+
+## Default behavior
+
+Out of the box, the starter:
+
+- Resolves policy from `@RateLimit` annotation values
+- Resolves key using default strategy: `scope:ClassName#methodName`
+- Applies fixed-window Redis rate limiting with `INCR` + TTL
+- Throws `RateLimitExceededException` when requests exceed the limit
+- Returns HTTP `429 Too Many Requests` with RFC 7807 Problem Detail body
+- Includes `Retry-After` and `RateLimit-*` headers in 429 responses
+- Publishes Micrometer metrics when `MeterRegistry` is present
+- Fails closed (rejects requests) when Redis is unavailable
+
+## Example usage
+
+Here's a simple example of protecting a service method:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import java.util.concurrent.TimeUnit;
+import org.springframework.stereotype.Service;
+
+@Service
+public class BillingService {
+
+  @RateLimit(
+      name = "invoice-create",
+      scope = "USER",
+      limit = 10,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES
+  )
+  public String createInvoice(String accountId) {
+    return "ok";
+  }
+}
+```
+
+This configuration limits invoice creation to 10 requests per minute with a `USER` scope.
+
+<Warning>
+The default key resolver uses `scope:ClassName#methodName` as the Redis key. For per-user limits, you need to implement a custom `RateLimitKeyResolver` that extracts user identity from method arguments or security context.
+</Warning>
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card
+    title="Install the starter"
+    icon="download"
+    href="/installation"
+  >
+    Add the Maven or Gradle dependency to your project
+  </Card>
+  <Card
+    title="Quick start guide"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Follow the step-by-step guide to implement rate limiting
+  </Card>
+</CardGroup>

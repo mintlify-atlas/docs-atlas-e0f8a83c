@@ -1,0 +1,343 @@
+---
+title: Redis setup
+description: Configure Redis connection for the rate limiter
+---
+
+The Spring Boot Redis Rate Limiter requires a Redis instance to store rate limit counters. This guide shows you how to set up Redis for local development and production.
+
+## Prerequisites
+
+The rate limiter uses Spring Data Redis and automatically configures itself when it detects a `StringRedisTemplate` bean. You need to add the Spring Data Redis dependency to your project:
+
+```xml pom.xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+## Local development with Docker
+
+The fastest way to run Redis locally is using Docker:
+
+```bash
+docker run -d \
+  --name redis-ratelimiter \
+  -p 6379:6379 \
+  redis:7.2-alpine
+```
+
+Then configure your application to connect to it:
+
+<CodeGroup>
+
+```properties application.properties
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+```
+
+</CodeGroup>
+
+## Docker Compose
+
+For a more complete local setup, use Docker Compose:
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis-ratelimiter
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  app:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_DATA_REDIS_PORT=6379
+    ports:
+      - "8080:8080"
+
+volumes:
+  redis-data:
+```
+
+Start the services:
+
+```bash
+docker-compose up -d
+```
+
+<Note>
+  When running in Docker Compose, set the Redis host to the service name (`redis`) instead of `localhost`.
+</Note>
+
+## Spring Data Redis configuration
+
+### Basic connection
+
+<CodeGroup>
+
+```properties application.properties
+# Redis server connection
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+spring.data.redis.password=
+spring.data.redis.database=0
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      database: 0
+```
+
+</CodeGroup>
+
+### Connection pool (Lettuce)
+
+The rate limiter uses Lettuce (the default Spring Data Redis client). Configure connection pooling for better performance:
+
+<CodeGroup>
+
+```properties application.properties
+# Lettuce connection pool
+spring.data.redis.lettuce.pool.enabled=true
+spring.data.redis.lettuce.pool.max-active=8
+spring.data.redis.lettuce.pool.max-idle=8
+spring.data.redis.lettuce.pool.min-idle=2
+spring.data.redis.lettuce.pool.max-wait=-1ms
+
+# Connection timeout
+spring.data.redis.timeout=2000ms
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+          max-wait: -1ms
+      timeout: 2000ms
+```
+
+</CodeGroup>
+
+<Note>
+  Connection pooling requires `commons-pool2` on the classpath. Add it as a dependency:
+  ```xml
+  <dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-pool2</artifactId>
+  </dependency>
+  ```
+</Note>
+
+### Redis Cluster
+
+For high availability, configure Redis Cluster:
+
+<CodeGroup>
+
+```properties application.properties
+spring.data.redis.cluster.nodes=node1:6379,node2:6379,node3:6379
+spring.data.redis.cluster.max-redirects=3
+spring.data.redis.password=your-password
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      cluster:
+        nodes:
+          - node1:6379
+          - node2:6379
+          - node3:6379
+        max-redirects: 3
+      password: your-password
+```
+
+</CodeGroup>
+
+### Redis Sentinel
+
+For automatic failover, configure Redis Sentinel:
+
+<CodeGroup>
+
+```properties application.properties
+spring.data.redis.sentinel.master=mymaster
+spring.data.redis.sentinel.nodes=sentinel1:26379,sentinel2:26379,sentinel3:26379
+spring.data.redis.password=your-password
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      sentinel:
+        master: mymaster
+        nodes:
+          - sentinel1:26379
+          - sentinel2:26379
+          - sentinel3:26379
+      password: your-password
+```
+
+</CodeGroup>
+
+## Production configuration
+
+For production environments, use a robust configuration with connection pooling, timeouts, and SSL:
+
+<CodeGroup>
+
+```properties application.properties
+# Redis connection
+spring.data.redis.host=redis.production.example.com
+spring.data.redis.port=6380
+spring.data.redis.password=${REDIS_PASSWORD}
+spring.data.redis.database=0
+spring.data.redis.ssl.enabled=true
+
+# Connection pool
+spring.data.redis.lettuce.pool.enabled=true
+spring.data.redis.lettuce.pool.max-active=16
+spring.data.redis.lettuce.pool.max-idle=8
+spring.data.redis.lettuce.pool.min-idle=4
+spring.data.redis.lettuce.pool.max-wait=5000ms
+
+# Timeouts
+spring.data.redis.timeout=3000ms
+spring.data.redis.connect-timeout=3000ms
+
+# Rate limiter configuration
+ratelimiter.redis-key-prefix=prod:api:ratelimit
+ratelimiter.fail-open=false
+ratelimiter.metrics-enabled=true
+```
+
+```yaml application.yml
+spring:
+  data:
+    redis:
+      host: redis.production.example.com
+      port: 6380
+      password: ${REDIS_PASSWORD}
+      database: 0
+      ssl:
+        enabled: true
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 16
+          max-idle: 8
+          min-idle: 4
+          max-wait: 5000ms
+      timeout: 3000ms
+      connect-timeout: 3000ms
+
+ratelimiter:
+  redis-key-prefix: prod:api:ratelimit
+  fail-open: false
+  metrics-enabled: true
+```
+
+</CodeGroup>
+
+<Warning>
+  Always use environment variables or secrets management for production credentials. Never commit passwords to version control.
+</Warning>
+
+## Testing the connection
+
+You can verify your Redis connection is working by checking the Spring Boot actuator health endpoint:
+
+```bash
+curl http://localhost:8080/actuator/health/redis
+```
+
+Or by running a simple test:
+
+```java RedisConnectionTest.java
+@SpringBootTest
+class RedisConnectionTest {
+
+  @Autowired
+  private StringRedisTemplate redisTemplate;
+
+  @Test
+  void redisConnectionWorks() {
+    redisTemplate.opsForValue().set("test-key", "test-value");
+    String value = redisTemplate.opsForValue().get("test-key");
+    assertThat(value).isEqualTo("test-value");
+  }
+}
+```
+
+## Redis key structure
+
+The rate limiter stores counters in Redis using this key pattern:
+
+```
+{redis-key-prefix}:{key}:{windowStartMillis}
+```
+
+For example, with the default prefix and a key of `user:123`:
+
+```
+ratelimiter:user:123:1700000000000
+```
+
+<Note>
+  Keys are automatically expired using Redis TTL based on the rate limit window duration plus a 1-second safety buffer.
+</Note>
+
+## Monitoring Redis
+
+Monitor your Redis instance to ensure the rate limiter is performing well:
+
+```bash
+# Check current keys
+redis-cli --scan --pattern "ratelimiter:*"
+
+# Monitor commands in real-time
+redis-cli MONITOR
+
+# Check memory usage
+redis-cli INFO memory
+
+# Check connection stats
+redis-cli INFO clients
+```

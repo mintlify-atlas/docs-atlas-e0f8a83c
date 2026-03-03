@@ -1,0 +1,621 @@
+---
+title: Custom policy provider
+description: Implement dynamic rate limit policies that can be configured at runtime or loaded from external sources
+---
+
+A policy provider resolves the effective rate limit policy for each request. Custom providers enable dynamic policies from configuration files, databases, or external services.
+
+## Understanding policy providers
+
+The `RateLimitPolicyProvider` interface (from `core/RateLimitPolicyProvider.java:11-20`) resolves the policy to enforce:
+
+```java
+public interface RateLimitPolicyProvider {
+    /**
+     * Resolve the policy to enforce for the given invocation.
+     * Typical usage:
+     * - Read @RateLimit values from RateLimitContext.getAnnotation()
+     * - Optionally apply overrides (e.g., properties, dynamic config)
+     *   based on annotation name/method/class
+     */
+    RateLimitPolicy resolvePolicy(RateLimitContext context);
+}
+```
+
+The returned `RateLimitPolicy` (from `model/RateLimitPolicy.java:7-24`) contains:
+
+```java
+public class RateLimitPolicy {
+    private final int limit;        // Max requests allowed
+    private final Duration window;  // Time window for the limit
+    private final String scope;     // Scope (e.g., "user", "ip", "global")
+    
+    public RateLimitPolicy(int limit, Duration window, String scope) {
+        // Constructor validates limit > 0 and window is positive
+    }
+}
+```
+
+## Default behavior
+
+The `AnnotationRateLimitPolicyProvider` (from `support/AnnotationRateLimitPolicyProvider.java:14-30`) reads policy directly from the annotation:
+
+```java
+@Override
+public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+    RateLimit annotation = context.getAnnotation();
+    Duration window = Duration.of(
+        annotation.duration(), 
+        annotation.timeUnit().toChronoUnit()
+    );
+    
+    String scope = annotation.scope();
+    if (scope == null || scope.isBlank()) {
+        scope = RateLimitScope.GLOBAL.getScope();
+    }
+    
+    return new RateLimitPolicy(annotation.limit(), window, scope);
+}
+```
+
+<Steps>
+
+### Create your provider class
+
+Implement the `RateLimitPolicyProvider` interface:
+
+```java
+package com.example.ratelimit;
+
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Component
+public class ConfigurablePolicyProvider implements RateLimitPolicyProvider {
+
+    private final Map<String, PolicyOverride> overrides = new ConcurrentHashMap<>();
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        
+        // Check for override by name
+        if (annotation.name() != null && !annotation.name().isBlank()) {
+            PolicyOverride override = overrides.get(annotation.name());
+            if (override != null) {
+                return new RateLimitPolicy(
+                    override.limit(),
+                    Duration.ofSeconds(override.windowSeconds()),
+                    override.scope()
+                );
+            }
+        }
+        
+        // Fall back to annotation values
+        Duration window = Duration.of(
+            annotation.duration(),
+            annotation.timeUnit().toChronoUnit()
+        );
+        
+        String scope = annotation.scope();
+        if (scope == null || scope.isBlank()) {
+            scope = "global";
+        }
+        
+        return new RateLimitPolicy(annotation.limit(), window, scope);
+    }
+    
+    public void setOverride(String name, int limit, long windowSeconds, String scope) {
+        overrides.put(name, new PolicyOverride(limit, windowSeconds, scope));
+    }
+    
+    private record PolicyOverride(int limit, long windowSeconds, String scope) {}
+}
+```
+
+### Register your provider
+
+Make it available as a Spring bean:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+@Configuration
+public class RateLimiterConfig {
+
+    @Bean
+    @Primary
+    public RateLimitPolicyProvider policyProvider() {
+        return new ConfigurablePolicyProvider();
+    }
+}
+```
+
+### Use named rate limits
+
+Reference your provider by naming your rate limits:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class ApiController {
+
+    @RateLimit(
+        name = "api-search",
+        limit = 10,  // Default, can be overridden
+        duration = 1
+    )
+    @GetMapping("/api/search")
+    public List<Result> search(@RequestParam String query) {
+        return searchService.search(query);
+    }
+}
+```
+
+### Update policies at runtime
+
+Modify policies without redeploying:
+
+```java
+import com.example.ratelimit.ConfigurablePolicyProvider;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/admin/ratelimit")
+public class RateLimitAdminController {
+
+    private final ConfigurablePolicyProvider policyProvider;
+    
+    public RateLimitAdminController(ConfigurablePolicyProvider policyProvider) {
+        this.policyProvider = policyProvider;
+    }
+
+    @PostMapping("/override")
+    public void setOverride(
+        @RequestParam String name,
+        @RequestParam int limit,
+        @RequestParam long windowSeconds,
+        @RequestParam(defaultValue = "global") String scope
+    ) {
+        policyProvider.setOverride(name, limit, windowSeconds, scope);
+    }
+}
+```
+
+</Steps>
+
+## Example: Properties-based provider
+
+Load policies from `application.properties` or `application.yml`:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.util.Map;
+
+@Component
+public class PropertiesBasedPolicyProvider implements RateLimitPolicyProvider {
+
+    private final RateLimitProperties properties;
+    
+    public PropertiesBasedPolicyProvider(RateLimitProperties properties) {
+        this.properties = properties;
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        String name = annotation.name();
+        
+        // Look up override in properties
+        if (name != null && !name.isBlank()) {
+            Map<String, PolicyConfig> policies = properties.getPolicies();
+            PolicyConfig config = policies.get(name);
+            
+            if (config != null) {
+                return new RateLimitPolicy(
+                    config.getLimit(),
+                    Duration.ofSeconds(config.getWindowSeconds()),
+                    config.getScope()
+                );
+            }
+        }
+        
+        // Fall back to annotation
+        Duration window = Duration.of(
+            annotation.duration(),
+            annotation.timeUnit().toChronoUnit()
+        );
+        
+        return new RateLimitPolicy(
+            annotation.limit(),
+            window,
+            annotation.scope().isBlank() ? "global" : annotation.scope()
+        );
+    }
+}
+
+@ConfigurationProperties(prefix = "app.ratelimit")
+class RateLimitProperties {
+    private Map<String, PolicyConfig> policies;
+    
+    public Map<String, PolicyConfig> getPolicies() {
+        return policies;
+    }
+    
+    public void setPolicies(Map<String, PolicyConfig> policies) {
+        this.policies = policies;
+    }
+    
+    static class PolicyConfig {
+        private int limit;
+        private long windowSeconds;
+        private String scope;
+        
+        // Getters and setters
+        public int getLimit() { return limit; }
+        public void setLimit(int limit) { this.limit = limit; }
+        
+        public long getWindowSeconds() { return windowSeconds; }
+        public void setWindowSeconds(long windowSeconds) { 
+            this.windowSeconds = windowSeconds; 
+        }
+        
+        public String getScope() { return scope; }
+        public void setScope(String scope) { this.scope = scope; }
+    }
+}
+```
+
+Configure in `application.yml`:
+
+```yaml
+app:
+  ratelimit:
+    policies:
+      api-search:
+        limit: 50
+        windowSeconds: 60
+        scope: user
+      api-export:
+        limit: 5
+        windowSeconds: 3600
+        scope: user
+```
+
+## Example: Database-backed provider
+
+Load policies from a database:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class DatabasePolicyProvider implements RateLimitPolicyProvider {
+
+    private final PolicyRepository policyRepository;
+    
+    public DatabasePolicyProvider(PolicyRepository policyRepository) {
+        this.policyRepository = policyRepository;
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        String name = annotation.name();
+        
+        if (name != null && !name.isBlank()) {
+            return policyRepository.findByName(name)
+                .map(entity -> new RateLimitPolicy(
+                    entity.getLimit(),
+                    Duration.ofSeconds(entity.getWindowSeconds()),
+                    entity.getScope()
+                ))
+                .orElseGet(() -> buildFromAnnotation(annotation));
+        }
+        
+        return buildFromAnnotation(annotation);
+    }
+    
+    private RateLimitPolicy buildFromAnnotation(RateLimit annotation) {
+        Duration window = Duration.of(
+            annotation.duration(),
+            annotation.timeUnit().toChronoUnit()
+        );
+        
+        return new RateLimitPolicy(
+            annotation.limit(),
+            window,
+            annotation.scope().isBlank() ? "global" : annotation.scope()
+        );
+    }
+}
+```
+
+## Example: User tier-based provider
+
+Apply different limits based on user subscription tier:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class TierBasedPolicyProvider implements RateLimitPolicyProvider {
+
+    private final UserService userService;
+    
+    public TierBasedPolicyProvider(UserService userService) {
+        this.userService = userService;
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        
+        // Get user tier
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.isAuthenticated()) {
+            String userId = auth.getName();
+            UserTier tier = userService.getUserTier(userId);
+            
+            // Multiply base limit by tier multiplier
+            int adjustedLimit = annotation.limit() * tier.getMultiplier();
+            
+            Duration window = Duration.of(
+                annotation.duration(),
+                annotation.timeUnit().toChronoUnit()
+            );
+            
+            return new RateLimitPolicy(
+                adjustedLimit,
+                window,
+                annotation.scope().isBlank() ? "user" : annotation.scope()
+            );
+        }
+        
+        // Anonymous users get base limit
+        Duration window = Duration.of(
+            annotation.duration(),
+            annotation.timeUnit().toChronoUnit()
+        );
+        
+        return new RateLimitPolicy(
+            annotation.limit(),
+            window,
+            "global"
+        );
+    }
+}
+
+enum UserTier {
+    FREE(1),
+    BASIC(5),
+    PREMIUM(10),
+    ENTERPRISE(50);
+    
+    private final int multiplier;
+    
+    UserTier(int multiplier) {
+        this.multiplier = multiplier;
+    }
+    
+    public int getMultiplier() {
+        return multiplier;
+    }
+}
+```
+
+## Example: Feature flag provider
+
+Disable rate limiting dynamically via feature flags:
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class FeatureFlagPolicyProvider implements RateLimitPolicyProvider {
+
+    private final FeatureFlagService featureFlagService;
+    
+    public FeatureFlagPolicyProvider(FeatureFlagService featureFlagService) {
+        this.featureFlagService = featureFlagService;
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        
+        // Check if rate limiting is disabled by feature flag
+        String methodName = context.getMethod().getName();
+        boolean rateLimitingEnabled = featureFlagService.isEnabled(
+            "ratelimit." + methodName
+        );
+        
+        Duration window = Duration.of(
+            annotation.duration(),
+            annotation.timeUnit().toChronoUnit()
+        );
+        
+        // If disabled, set limit to a very high value
+        int effectiveLimit = rateLimitingEnabled 
+            ? annotation.limit() 
+            : Integer.MAX_VALUE;
+        
+        return new RateLimitPolicy(
+            effectiveLimit,
+            window,
+            annotation.scope().isBlank() ? "global" : annotation.scope()
+        );
+    }
+}
+```
+
+## Best practices
+
+### Provide sensible defaults
+
+Always fall back to annotation values when overrides aren't available:
+
+```java
+@Override
+public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+    RateLimit annotation = context.getAnnotation();
+    
+    // Try to load override
+    PolicyOverride override = loadOverride(annotation.name());
+    if (override != null) {
+        return new RateLimitPolicy(
+            override.limit(),
+            Duration.ofSeconds(override.windowSeconds()),
+            override.scope()
+        );
+    }
+    
+    // Fall back to annotation
+    return buildFromAnnotation(annotation);
+}
+```
+
+### Cache expensive lookups
+
+Avoid hitting the database or external services on every request:
+
+```java
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+
+import java.time.Duration;
+
+@Component
+public class CachedDatabasePolicyProvider implements RateLimitPolicyProvider {
+
+    private final PolicyRepository repository;
+    private final Cache<String, RateLimitPolicy> cache;
+    
+    public CachedDatabasePolicyProvider(PolicyRepository repository) {
+        this.repository = repository;
+        this.cache = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .maximumSize(1000)
+            .build();
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimit annotation = context.getAnnotation();
+        String name = annotation.name();
+        
+        if (name != null && !name.isBlank()) {
+            return cache.get(name, key -> loadFromDatabase(key, annotation));
+        }
+        
+        return buildFromAnnotation(annotation);
+    }
+    
+    private RateLimitPolicy loadFromDatabase(String name, RateLimit annotation) {
+        return repository.findByName(name)
+            .map(entity -> new RateLimitPolicy(
+                entity.getLimit(),
+                Duration.ofSeconds(entity.getWindowSeconds()),
+                entity.getScope()
+            ))
+            .orElseGet(() -> buildFromAnnotation(annotation));
+    }
+}
+```
+
+### Validate policy constraints
+
+Ensure policies meet minimum requirements:
+
+```java
+@Override
+public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+    RateLimit annotation = context.getAnnotation();
+    PolicyConfig config = loadConfig(annotation.name());
+    
+    // Enforce minimum limits for safety
+    int limit = Math.max(config.getLimit(), 1);
+    long windowSeconds = Math.max(config.getWindowSeconds(), 1L);
+    
+    return new RateLimitPolicy(
+        limit,
+        Duration.ofSeconds(windowSeconds),
+        config.getScope()
+    );
+}
+```
+
+### Log policy resolutions
+
+Make debugging easier by logging which policy was applied:
+
+```java
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+@Component
+public class LoggingPolicyProvider implements RateLimitPolicyProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(LoggingPolicyProvider.class);
+    private final RateLimitPolicyProvider delegate;
+    
+    public LoggingPolicyProvider(RateLimitPolicyProvider delegate) {
+        this.delegate = delegate;
+    }
+
+    @Override
+    public RateLimitPolicy resolvePolicy(RateLimitContext context) {
+        RateLimitPolicy policy = delegate.resolvePolicy(context);
+        
+        log.debug("Resolved policy for {}.{}: limit={}, window={}, scope={}",
+            context.getTargetClass().getSimpleName(),
+            context.getMethod().getName(),
+            policy.getLimit(),
+            policy.getWindow(),
+            policy.getScope()
+        );
+        
+        return policy;
+    }
+}
+```

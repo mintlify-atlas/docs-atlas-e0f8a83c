@@ -1,0 +1,444 @@
+---
+title: Metrics
+description: Monitor rate limiter performance and outcomes using Micrometer metrics
+---
+
+The rate limiter automatically records metrics using Micrometer when it's available on the classpath. These metrics help you monitor rate limit effectiveness, identify blocked requests, and track errors.
+
+## Available metrics
+
+The `MicrometerRateLimitMetricsRecorder` (from `metrics/MicrometerRateLimitMetricsRecorder.java:14-61`) publishes the following metrics:
+
+### Request outcomes
+
+**Counter**: `ratelimiter.requests`
+
+Tracks the total number of rate limit evaluations.
+
+**Tags**:
+- `name`: The logical name from `@RateLimit(name = "...")` (or "unknown" if not set)
+- `scope`: The rate limit scope ("global", "user", "ip", etc.)
+- `outcome`: Either "allowed" or "blocked"
+
+**Implementation** (from `metrics/MicrometerRateLimitMetricsRecorder.java:22-30`):
+
+```java
+@Override
+public void recordDecision(String name, RateLimitPolicy policy, 
+                          RateLimitDecision decision, Duration latency) {
+    String outcome = decision.isAllowed() ? "allowed" : "blocked";
+    Counter.builder("ratelimiter.requests")
+        .tag("name", sanitize(name))
+        .tag("scope", sanitize(policy.getScope()))
+        .tag("outcome", outcome)
+        .register(meterRegistry)
+        .increment();
+}
+```
+
+### Evaluation latency
+
+**Timer**: `ratelimiter.evaluate.latency`
+
+Measures how long it takes to evaluate a rate limit (including Redis roundtrip).
+
+**Tags**:
+- `name`: The logical name from the annotation
+- `scope`: The rate limit scope
+
+**Implementation** (from `metrics/MicrometerRateLimitMetricsRecorder.java:32-36`):
+
+```java
+Timer.builder("ratelimiter.evaluate.latency")
+    .tag("name", sanitize(name))
+    .tag("scope", sanitize(policy.getScope()))
+    .register(meterRegistry)
+    .record(latency);
+```
+
+### Errors
+
+**Counter**: `ratelimiter.errors`
+
+Tracks rate limiter backend failures (e.g., Redis connection issues).
+
+**Tags**:
+- `name`: The logical name from the annotation
+- `scope`: The rate limit scope
+- `exception`: The exception class name (e.g., "RedisConnectionException")
+
+**Implementation** (from `metrics/MicrometerRateLimitMetricsRecorder.java:39-53`):
+
+```java
+@Override
+public void recordError(String name, RateLimitPolicy policy, 
+                       Duration latency, Throwable error) {
+    Counter.builder("ratelimiter.errors")
+        .tag("name", sanitize(name))
+        .tag("scope", sanitize(policy.getScope()))
+        .tag("exception", error == null ? "unknown" 
+            : sanitize(error.getClass().getSimpleName()))
+        .register(meterRegistry)
+        .increment();
+    
+    // Also records latency for failed evaluations
+    Timer.builder("ratelimiter.evaluate.latency")
+        .tag("name", sanitize(name))
+        .tag("scope", sanitize(policy.getScope()))
+        .register(meterRegistry)
+        .record(latency);
+}
+```
+
+## Viewing metrics
+
+### Actuator endpoint
+
+Expose metrics via Spring Boot Actuator:
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: metrics, prometheus
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+```
+
+Access metrics at:
+- `http://localhost:8080/actuator/metrics` (all metrics)
+- `http://localhost:8080/actuator/metrics/ratelimiter.requests` (specific metric)
+- `http://localhost:8080/actuator/prometheus` (Prometheus format)
+
+### Query examples
+
+**Total allowed requests**:
+```
+http://localhost:8080/actuator/metrics/ratelimiter.requests?tag=outcome:allowed
+```
+
+**Total blocked requests**:
+```
+http://localhost:8080/actuator/metrics/ratelimiter.requests?tag=outcome:blocked
+```
+
+**Requests for a specific rate limit**:
+```
+http://localhost:8080/actuator/metrics/ratelimiter.requests?tag=name:api-search
+```
+
+**Errors for a specific scope**:
+```
+http://localhost:8080/actuator/metrics/ratelimiter.errors?tag=scope:user
+```
+
+## Prometheus integration
+
+### Configure Prometheus export
+
+Add the Micrometer Prometheus dependency:
+
+```xml
+<dependency>
+    <groupId>io.micrometer</groupId>
+    <artifactId>micrometer-registry-prometheus</artifactId>
+</dependency>
+```
+
+Enable the endpoint:
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active:default}
+```
+
+### Scrape configuration
+
+Configure Prometheus to scrape your application:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'spring-boot-app'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      - targets: ['localhost:8080']
+```
+
+### Example PromQL queries
+
+**Rate of blocked requests per second**:
+```promql
+rate(ratelimiter_requests_total{outcome="blocked"}[5m])
+```
+
+**Percentage of blocked requests**:
+```promql
+sum(rate(ratelimiter_requests_total{outcome="blocked"}[5m])) 
+/ 
+sum(rate(ratelimiter_requests_total[5m])) * 100
+```
+
+**95th percentile evaluation latency**:
+```promql
+histogram_quantile(0.95, 
+  sum(rate(ratelimiter_evaluate_latency_seconds_bucket[5m])) by (le, name)
+)
+```
+
+**Requests by outcome and name**:
+```promql
+sum by (name, outcome) (ratelimiter_requests_total)
+```
+
+**Error rate by exception type**:
+```promql
+rate(ratelimiter_errors_total[5m])
+```
+
+## Grafana dashboards
+
+### Example dashboard panels
+
+**Request rate by outcome**:
+```promql
+sum by (outcome) (rate(ratelimiter_requests_total[5m]))
+```
+
+**Top rate-limited endpoints**:
+```promql
+topk(10, sum by (name) (rate(ratelimiter_requests_total{outcome="blocked"}[5m])))
+```
+
+**Average evaluation latency**:
+```promql
+rate(ratelimiter_evaluate_latency_seconds_sum[5m]) 
+/ 
+rate(ratelimiter_evaluate_latency_seconds_count[5m])
+```
+
+**Error rate**:
+```promql
+sum(rate(ratelimiter_errors_total[5m])) by (exception)
+```
+
+### Sample dashboard JSON
+
+Create a Grafana dashboard with these key panels:
+
+1. **Total Requests** (Stat panel)
+   - Query: `sum(ratelimiter_requests_total)`
+
+2. **Block Rate** (Gauge panel)
+   - Query: `sum(rate(ratelimiter_requests_total{outcome="blocked"}[5m])) / sum(rate(ratelimiter_requests_total[5m])) * 100`
+   - Unit: Percent (0-100)
+
+3. **Requests Over Time** (Graph panel)
+   - Query A: `sum(rate(ratelimiter_requests_total{outcome="allowed"}[5m]))`
+   - Query B: `sum(rate(ratelimiter_requests_total{outcome="blocked"}[5m]))`
+
+4. **Latency Percentiles** (Graph panel)
+   - Query p50: `histogram_quantile(0.50, sum(rate(ratelimiter_evaluate_latency_seconds_bucket[5m])) by (le))`
+   - Query p95: `histogram_quantile(0.95, sum(rate(ratelimiter_evaluate_latency_seconds_bucket[5m])) by (le))`
+   - Query p99: `histogram_quantile(0.99, sum(rate(ratelimiter_evaluate_latency_seconds_bucket[5m])) by (le))`
+
+## Custom metrics recorder
+
+You can implement your own metrics recorder for custom backends:
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+
+@Component
+public class CustomMetricsRecorder implements RateLimitMetricsRecorder {
+
+    @Override
+    public void recordDecision(String name, RateLimitPolicy policy,
+                              RateLimitDecision decision, Duration latency) {
+        // Send to your custom metrics backend
+        String outcome = decision.isAllowed() ? "allowed" : "blocked";
+        
+        myMetricsBackend.increment(
+            "ratelimiter.requests",
+            Map.of(
+                "name", name,
+                "scope", policy.getScope(),
+                "outcome", outcome
+            )
+        );
+        
+        myMetricsBackend.recordTiming(
+            "ratelimiter.latency",
+            latency.toMillis(),
+            Map.of("name", name, "scope", policy.getScope())
+        );
+    }
+
+    @Override
+    public void recordError(String name, RateLimitPolicy policy,
+                           Duration latency, Throwable error) {
+        myMetricsBackend.increment(
+            "ratelimiter.errors",
+            Map.of(
+                "name", name,
+                "scope", policy.getScope(),
+                "exception", error.getClass().getSimpleName()
+            )
+        );
+    }
+}
+```
+
+## Alerting
+
+### High block rate alert
+
+Alert when more than 20% of requests are blocked:
+
+```yaml
+# prometheus/alerts.yml
+groups:
+  - name: ratelimiter
+    interval: 30s
+    rules:
+      - alert: HighRateLimitBlockRate
+        expr: |
+          sum(rate(ratelimiter_requests_total{outcome="blocked"}[5m])) 
+          / 
+          sum(rate(ratelimiter_requests_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate limit block rate"
+          description: "{{ $value | humanizePercentage }} of requests are being blocked"
+```
+
+### Backend errors alert
+
+Alert when Redis failures occur:
+
+```yaml
+- alert: RateLimiterBackendErrors
+  expr: rate(ratelimiter_errors_total[5m]) > 0
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Rate limiter backend errors detected"
+    description: "{{ $value }} errors per second in rate limiter backend"
+```
+
+### High latency alert
+
+Alert when p95 latency exceeds 100ms:
+
+```yaml
+- alert: RateLimiterHighLatency
+  expr: |
+    histogram_quantile(0.95,
+      sum(rate(ratelimiter_evaluate_latency_seconds_bucket[5m])) by (le)
+    ) > 0.1
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Rate limiter evaluation latency is high"
+    description: "P95 latency is {{ $value | humanizeDuration }}"
+```
+
+## Disabling metrics
+
+If Micrometer is not on the classpath, the library automatically uses `NoOpRateLimitMetricsRecorder`, which does nothing.
+
+To explicitly disable metrics:
+
+```java
+import io.github.v4runsharma.ratelimiter.metrics.NoOpRateLimitMetricsRecorder;
+import io.github.v4runsharma.ratelimiter.metrics.RateLimitMetricsRecorder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+@Configuration
+public class RateLimiterConfig {
+
+    @Bean
+    @Primary
+    public RateLimitMetricsRecorder noOpMetricsRecorder() {
+        return new NoOpRateLimitMetricsRecorder();
+    }
+}
+```
+
+## Best practices
+
+### Name your rate limits
+
+Always use the `name` parameter for better observability:
+
+```java
+// Good: Named rate limit
+@RateLimit(name = "api-search", limit = 10, duration = 1)
+
+// Bad: Unnamed rate limit (shows as "unknown" in metrics)
+@RateLimit(limit = 10, duration = 1)
+```
+
+### Use consistent naming conventions
+
+Adopt a naming scheme for easier metric queries:
+
+```java
+@RateLimit(name = "api.search", ...)
+@RateLimit(name = "api.export", ...)
+@RateLimit(name = "admin.users.create", ...)
+```
+
+### Monitor both outcomes
+
+Track both allowed and blocked requests to understand traffic patterns:
+
+```promql
+sum by (outcome) (rate(ratelimiter_requests_total[5m]))
+```
+
+### Set up alerting
+
+Create alerts for:
+- Unusually high block rates (potential abuse or misconfiguration)
+- Backend errors (Redis connectivity issues)
+- High latency (performance degradation)
+
+### Add custom tags
+
+Enrich metrics with application-level tags:
+
+```yaml
+management:
+  metrics:
+    tags:
+      application: my-service
+      environment: production
+      region: us-east-1
+```

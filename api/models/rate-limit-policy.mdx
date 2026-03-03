@@ -1,0 +1,291 @@
+---
+title: RateLimitPolicy
+description: Immutable rate limit policy model
+---
+
+## Overview
+
+The `RateLimitPolicy` class is an immutable model representing a rate limit policy: N requests per time window with an optional scope (e.g., per user, per IP).
+
+**Package:** `io.github.v4runsharma.ratelimiter.model`
+
+**Source:** `RateLimitPolicy.java:7`
+
+## Constructor
+
+```java
+public RateLimitPolicy(int limit, Duration window, String scope)
+```
+
+Creates a new rate limit policy.
+
+<ParamField path="limit" type="int" required>
+  Maximum number of requests allowed within the window. Must be greater than 0.
+</ParamField>
+
+<ParamField path="window" type="Duration" required>
+  Time window for the limit. Must be a positive, non-zero duration.
+</ParamField>
+
+<ParamField path="scope" type="String" required>
+  Scope identifier (e.g., "user", "ip", "global"). Normalized using `RateLimitScope.from()`.
+</ParamField>
+
+**Throws:** `IllegalArgumentException` if limit ≤ 0 or window is null/negative/zero.
+
+**Source:** `RateLimitPolicy.java:13-24`
+
+## Properties
+
+### getLimit
+
+```java
+public int getLimit()
+```
+
+<ResponseField name="return" type="int">
+  The maximum number of requests allowed within the time window.
+</ResponseField>
+
+**Source:** `RateLimitPolicy.java:26-28`
+
+### getWindow
+
+```java
+public Duration getWindow()
+```
+
+<ResponseField name="return" type="Duration">
+  The time window duration for the rate limit.
+</ResponseField>
+
+**Source:** `RateLimitPolicy.java:30-32`
+
+### getScope
+
+```java
+public String getScope()
+```
+
+<ResponseField name="return" type="String">
+  The normalized scope identifier (e.g., "USER", "IP", "GLOBAL").
+</ResponseField>
+
+**Source:** `RateLimitPolicy.java:34-36`
+
+## Usage examples
+
+### Creating policies
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+
+// 100 requests per minute, user-scoped
+RateLimitPolicy userPolicy = new RateLimitPolicy(
+    100,
+    Duration.ofMinutes(1),
+    "user"
+);
+
+// 1000 requests per hour, IP-scoped
+RateLimitPolicy ipPolicy = new RateLimitPolicy(
+    1000,
+    Duration.ofHours(1),
+    "ip"
+);
+
+// 50 requests per 10 seconds, global scope
+RateLimitPolicy globalPolicy = new RateLimitPolicy(
+    50,
+    Duration.ofSeconds(10),
+    "global"
+);
+```
+
+### Using with RateLimiter
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimiter;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+import java.time.Duration;
+
+public class RateLimitService {
+    
+    private final RateLimiter rateLimiter;
+    
+    public boolean checkUserLimit(String userId) {
+        // Create user-scoped policy
+        RateLimitPolicy policy = new RateLimitPolicy(
+            100,
+            Duration.ofMinutes(1),
+            "user"
+        );
+        
+        // Evaluate
+        String key = "user:" + userId;
+        RateLimitDecision decision = rateLimiter.evaluate(key, policy);
+        
+        return decision.isAllowed();
+    }
+}
+```
+
+### Converting from annotation
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
+
+public class PolicyConverter {
+    
+    public static RateLimitPolicy fromAnnotation(RateLimit annotation) {
+        // Convert TimeUnit to ChronoUnit
+        ChronoUnit chronoUnit = annotation.timeUnit().toChronoUnit();
+        
+        // Create duration
+        Duration window = Duration.of(annotation.duration(), chronoUnit);
+        
+        // Create policy
+        return new RateLimitPolicy(
+            annotation.limit(),
+            window,
+            annotation.scope()
+        );
+    }
+}
+```
+
+### Policy comparison
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+
+public class PolicyManager {
+    
+    public void comparePolicies() {
+        RateLimitPolicy policy1 = new RateLimitPolicy(
+            100, 
+            Duration.ofMinutes(1), 
+            "user"
+        );
+        
+        RateLimitPolicy policy2 = new RateLimitPolicy(
+            100, 
+            Duration.ofMinutes(1), 
+            "user"
+        );
+        
+        // Policies are equal
+        boolean isEqual = policy1.equals(policy2); // true
+        int hash1 = policy1.hashCode();
+        int hash2 = policy2.hashCode(); // same as hash1
+    }
+}
+```
+
+### Dynamic policy selection
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import java.time.Duration;
+
+public class DynamicPolicyProvider {
+    
+    public RateLimitPolicy getPolicyForTier(String tier) {
+        return switch (tier.toUpperCase()) {
+            case "FREE" -> new RateLimitPolicy(
+                100,
+                Duration.ofMinutes(1),
+                "user"
+            );
+            case "PREMIUM" -> new RateLimitPolicy(
+                1000,
+                Duration.ofMinutes(1),
+                "user"
+            );
+            case "ENTERPRISE" -> new RateLimitPolicy(
+                10000,
+                Duration.ofMinutes(1),
+                "user"
+            );
+            default -> throw new IllegalArgumentException("Unknown tier: " + tier);
+        };
+    }
+}
+```
+
+## Validation
+
+The constructor validates parameters:
+
+```java
+// Valid policies
+var valid1 = new RateLimitPolicy(1, Duration.ofSeconds(1), "user");
+var valid2 = new RateLimitPolicy(1000, Duration.ofHours(24), "global");
+
+// Invalid: limit must be > 0
+try {
+    var invalid = new RateLimitPolicy(0, Duration.ofSeconds(1), "user");
+} catch (IllegalArgumentException e) {
+    // "Limit must be greater than 0"
+}
+
+// Invalid: window must be positive
+try {
+    var invalid = new RateLimitPolicy(10, Duration.ZERO, "user");
+} catch (IllegalArgumentException e) {
+    // "Window must be a positive duration"
+}
+
+// Invalid: window cannot be null
+try {
+    var invalid = new RateLimitPolicy(10, null, "user");
+} catch (IllegalArgumentException e) {
+    // "Window must be a positive duration"
+}
+```
+
+## Immutability
+
+All properties are immutable:
+
+```java
+RateLimitPolicy policy = new RateLimitPolicy(
+    100,
+    Duration.ofMinutes(1),
+    "user"
+);
+
+// Properties are read-only
+int limit = policy.getLimit(); // 100
+Duration window = policy.getWindow(); // PT1M
+String scope = policy.getScope(); // "USER"
+
+// No setters available - policy is immutable
+```
+
+## String representation
+
+```java
+RateLimitPolicy policy = new RateLimitPolicy(
+    100,
+    Duration.ofMinutes(1),
+    "user"
+);
+
+System.out.println(policy);
+// Output: RateLimitPolicy{limit=100, window=PT1M, scope='USER'}
+```
+
+**Source:** `RateLimitPolicy.java:54-60`
+
+## Related
+
+- [RateLimitPolicyProvider](/api/core/rate-limit-policy-provider) - Resolves policies from context
+- [@RateLimit](/api/annotations/rate-limit) - Annotation containing policy metadata
+- [RateLimitScope](/api/models/rate-limit-scope) - Available scope values

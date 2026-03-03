@@ -1,0 +1,323 @@
+---
+title: RateLimitScope
+description: Enumeration of available rate limit scopes
+---
+
+## Overview
+
+The `RateLimitScope` enum defines the available rate limit scopes used to categorize and identify rate limit buckets.
+
+**Package:** `io.github.v4runsharma.ratelimiter.model`
+
+**Source:** `RateLimitScope.java:3`
+
+## Enum values
+
+### GLOBAL
+
+Global scope applies rate limits across all users and requests.
+
+```java
+GLOBAL("GLOBAL")
+```
+
+**Source:** `RateLimitScope.java:5`
+
+### USER
+
+User scope applies rate limits per individual user.
+
+```java
+USER("USER")
+```
+
+**Source:** `RateLimitScope.java:6`
+
+### IP
+
+IP scope applies rate limits per IP address.
+
+```java
+IP("IP")
+```
+
+**Source:** `RateLimitScope.java:7`
+
+## Methods
+
+### from
+
+```java
+public static RateLimitScope from(String scope)
+```
+
+Converts a string to a `RateLimitScope` enum value.
+
+<ParamField path="scope" type="String" required>
+  The scope string to convert (case-insensitive). Cannot be null or blank.
+</ParamField>
+
+<ResponseField name="return" type="RateLimitScope">
+  The matching enum value.
+</ResponseField>
+
+**Throws:** `IllegalArgumentException` if:
+- `scope` is null or blank
+- `scope` doesn't match any enum value
+
+**Source:** `RateLimitScope.java:15-25`
+
+### getScope
+
+```java
+public String getScope()
+```
+
+<ResponseField name="return" type="String">
+  The scope value as a string (e.g., "GLOBAL", "USER", "IP").
+</ResponseField>
+
+**Source:** `RateLimitScope.java:27-29`
+
+### getKey
+
+```java
+public String getKey()
+```
+
+<ResponseField name="return" type="String">
+  The enum name (same as `name()` method).
+</ResponseField>
+
+**Source:** `RateLimitScope.java:31-33`
+
+## Usage examples
+
+### In annotations
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+
+public class ApiController {
+    
+    // Global scope
+    @RateLimit(
+        scope = "global",
+        limit = 1000,
+        duration = 1
+    )
+    public void globalEndpoint() { }
+    
+    // User scope
+    @RateLimit(
+        scope = "user",
+        limit = 100,
+        duration = 1
+    )
+    public void userEndpoint() { }
+    
+    // IP scope
+    @RateLimit(
+        scope = "ip",
+        limit = 50,
+        duration = 1
+    )
+    public void ipEndpoint() { }
+}
+```
+
+### Converting from string
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitScope;
+
+public class ScopeConverter {
+    
+    public void convertScopes() {
+        // Case-insensitive conversion
+        RateLimitScope scope1 = RateLimitScope.from("user");    // USER
+        RateLimitScope scope2 = RateLimitScope.from("USER");    // USER
+        RateLimitScope scope3 = RateLimitScope.from("User");    // USER
+        
+        // Get scope string
+        String scopeStr = scope1.getScope(); // "USER"
+        String key = scope1.getKey();         // "USER"
+    }
+    
+    public void handleInvalidScope() {
+        try {
+            RateLimitScope.from("invalid");
+        } catch (IllegalArgumentException e) {
+            // "Invalid scope: invalid"
+        }
+        
+        try {
+            RateLimitScope.from("");
+        } catch (IllegalArgumentException e) {
+            // "Scope cannot be null or blank"
+        }
+    }
+}
+```
+
+### In policy creation
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.model.RateLimitScope;
+import java.time.Duration;
+
+public class PolicyFactory {
+    
+    public RateLimitPolicy createUserPolicy() {
+        return new RateLimitPolicy(
+            100,
+            Duration.ofMinutes(1),
+            RateLimitScope.USER.getScope()
+        );
+    }
+    
+    public RateLimitPolicy createIpPolicy() {
+        return new RateLimitPolicy(
+            1000,
+            Duration.ofHours(1),
+            RateLimitScope.IP.getScope()
+        );
+    }
+    
+    public RateLimitPolicy createGlobalPolicy() {
+        return new RateLimitPolicy(
+            10000,
+            Duration.ofMinutes(5),
+            RateLimitScope.GLOBAL.getScope()
+        );
+    }
+}
+```
+
+### Scope-based key resolution
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitScope;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+
+public class ScopeBasedKeyResolver implements RateLimitKeyResolver {
+    
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        String scopeStr = context.getAnnotation().scope();
+        RateLimitScope scope = RateLimitScope.from(
+            scopeStr.isEmpty() ? "global" : scopeStr
+        );
+        
+        return switch (scope) {
+            case USER -> "user:" + getCurrentUserId();
+            case IP -> "ip:" + getCurrentIpAddress();
+            case GLOBAL -> "global:all";
+        };
+    }
+    
+    private String getCurrentUserId() {
+        // Get from security context
+        return "user-123";
+    }
+    
+    private String getCurrentIpAddress() {
+        // Get from request
+        return "192.168.1.1";
+    }
+}
+```
+
+### Validation
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitScope;
+
+public class ScopeValidator {
+    
+    public boolean isValidScope(String scope) {
+        try {
+            RateLimitScope.from(scope);
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+    
+    public RateLimitScope parseScope(String scope, RateLimitScope defaultScope) {
+        try {
+            return RateLimitScope.from(scope);
+        } catch (IllegalArgumentException e) {
+            return defaultScope;
+        }
+    }
+}
+```
+
+### Iterating all scopes
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitScope;
+
+public class ScopeManager {
+    
+    public void listAllScopes() {
+        for (RateLimitScope scope : RateLimitScope.values()) {
+            System.out.println("Scope: " + scope.getScope());
+            System.out.println("Key: " + scope.getKey());
+            System.out.println("Name: " + scope.name());
+            System.out.println();
+        }
+        
+        // Output:
+        // Scope: GLOBAL
+        // Key: GLOBAL
+        // Name: GLOBAL
+        //
+        // Scope: USER
+        // Key: USER
+        // Name: USER
+        //
+        // Scope: IP
+        // Key: IP
+        // Name: IP
+    }
+}
+```
+
+## Extending scopes
+
+To add custom scopes, you would need to modify the enum:
+
+```java
+public enum RateLimitScope {
+    GLOBAL("GLOBAL"),
+    USER("USER"),
+    IP("IP"),
+    API_KEY("API_KEY"),      // New custom scope
+    ORGANIZATION("ORGANIZATION"); // New custom scope
+    
+    // ... rest of implementation
+}
+```
+
+Alternatively, use string-based scopes directly if you need dynamic scope values:
+
+```java
+@RateLimit(
+    scope = "custom-scope",  // Any string value
+    limit = 100,
+    duration = 1
+)
+public void customScopedEndpoint() { }
+```
+
+Note: The `from()` method will throw an exception for custom scope strings that don't match enum values, but the `RateLimitPolicy` constructor accepts any string.
+
+## Related
+
+- [@RateLimit](/api/annotations/rate-limit) - Uses scope in annotation
+- [RateLimitPolicy](/api/models/rate-limit-policy) - Stores normalized scope
+- [DefaultRateLimitKeyResolver](/api/key/default-rate-limit-key-resolver) - Uses scope in key generation

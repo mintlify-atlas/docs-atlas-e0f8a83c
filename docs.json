@@ -1,122 +1,127 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Spring Boot Redis Rate Limiter",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#DC382D",
+    "light": "#FF6B6B",
+    "dark": "#A71E17"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/V4run-Sharma/spring-boot-starter-redis-rate-limiter"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/V4run-Sharma/spring-boot-starter-redis-rate-limiter"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/overview",
+              "concepts/rate-limiting",
+              "concepts/key-resolution",
+              "concepts/fail-open-closed"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Guides",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "guides/basic-usage",
+              "guides/custom-key-resolver",
+              "guides/custom-policy-provider",
+              "guides/metrics",
+              "guides/http-responses",
+              "guides/testing"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Configuration",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "configuration/properties",
+              "configuration/redis-setup"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Annotations",
             "pages": [
-              "api-reference/introduction"
+              "api/annotations/rate-limit"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Core Interfaces",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/core/rate-limiter",
+              "api/core/rate-limit-enforcer",
+              "api/core/rate-limit-policy-provider"
+            ]
+          },
+          {
+            "group": "Key Resolution",
+            "pages": [
+              "api/key/rate-limit-key-resolver",
+              "api/key/default-rate-limit-key-resolver"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "api/models/rate-limit-policy",
+              "api/models/rate-limit-decision",
+              "api/models/rate-limit-scope"
+            ]
+          },
+          {
+            "group": "Exceptions",
+            "pages": [
+              "api/exceptions/rate-limit-exceeded",
+              "api/exceptions/rate-limiter-backend"
+            ]
+          },
+          {
+            "group": "Metrics",
+            "pages": [
+              "api/metrics/rate-limit-metrics-recorder"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Resources",
+            "pages": [
+              "resources/examples",
+              "resources/troubleshooting",
+              "resources/faq",
+              "resources/changelog",
+              "resources/contributing"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

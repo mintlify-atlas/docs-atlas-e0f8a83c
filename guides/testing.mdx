@@ -1,0 +1,594 @@
+---
+title: Testing
+description: Test rate limiting behavior in your Spring Boot application using integration tests and mocks
+---
+
+Testing rate limiting ensures your limits are correctly configured and enforced. This guide shows how to write both unit and integration tests.
+
+## Integration testing with Redis
+
+The library includes integration tests using Testcontainers to verify behavior against a real Redis instance.
+
+### Example: Basic rate limiting test
+
+From `redis/RedisRateLimiterIT.java:57-71`:
+
+```java
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import io.github.v4runsharma.ratelimiter.redis.RedisRateLimiter;
+import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import java.time.Clock;
+import java.time.Duration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@Testcontainers(disabledWithoutDocker = true)
+class RedisRateLimiterIT {
+
+    @Container
+    private static final GenericContainer<?> REDIS = 
+        new GenericContainer<>("redis:7.2-alpine")
+            .withExposedPorts(6379);
+
+    @Test
+    void evaluatesAgainstRealRedis() {
+        RedisRateLimiter rateLimiter = new RedisRateLimiter(
+            redisTemplate,
+            Clock.fixed(FIXED_TIME, ZoneOffset.UTC),
+            "integration",
+            false
+        );
+        RateLimitPolicy policy = new RateLimitPolicy(
+            2, 
+            Duration.ofMinutes(1), 
+            "GLOBAL"
+        );
+        String key = "serial-" + UUID.randomUUID();
+
+        assertThat(rateLimiter.evaluate(key, policy).isAllowed()).isTrue();
+        assertThat(rateLimiter.evaluate(key, policy).isAllowed()).isTrue();
+        assertThat(rateLimiter.evaluate(key, policy).isAllowed()).isFalse();
+    }
+}
+```
+
+This test:
+1. Starts a Redis container using Testcontainers
+2. Creates a rate limiter with a limit of 2 requests per minute
+3. Makes 3 requests and verifies the 3rd is blocked
+
+### Example: Concurrent access test
+
+From `redis/RedisRateLimiterIT.java:73-118`:
+
+```java
+@Test
+void enforcesLimitUnderConcurrentAccess() throws Exception {
+    int limit = 20;
+    int requests = 50;
+
+    RedisRateLimiter rateLimiter = new RedisRateLimiter(
+        redisTemplate,
+        Clock.fixed(FIXED_TIME, ZoneOffset.UTC),
+        "integration",
+        false
+    );
+    RateLimitPolicy policy = new RateLimitPolicy(
+        limit, 
+        Duration.ofMinutes(1), 
+        "GLOBAL"
+    );
+    String key = "concurrent-" + UUID.randomUUID();
+
+    CountDownLatch startLatch = new CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(16);
+    
+    try {
+        List<Callable<Boolean>> tasks = IntStream.range(0, requests)
+            .mapToObj(i -> (Callable<Boolean>) () -> {
+                startLatch.await(5, TimeUnit.SECONDS);
+                return rateLimiter.evaluate(key, policy).isAllowed();
+            })
+            .toList();
+
+        List<Future<Boolean>> futures = new ArrayList<>(requests);
+        for (Callable<Boolean> task : tasks) {
+            futures.add(executor.submit(task));
+        }
+        startLatch.countDown();
+
+        int allowed = 0;
+        int blocked = 0;
+        for (Future<Boolean> future : futures) {
+            if (Boolean.TRUE.equals(future.get(10, TimeUnit.SECONDS))) {
+                allowed++;
+            } else {
+                blocked++;
+            }
+        }
+
+        assertThat(allowed).isEqualTo(limit);
+        assertThat(blocked).isEqualTo(requests - limit);
+    } finally {
+        executor.shutdownNow();
+    }
+}
+```
+
+This test verifies that rate limiting works correctly under concurrent load.
+
+## Unit testing with mocks
+
+Unit tests use mocked dependencies to test rate limiting logic in isolation.
+
+### Example: Allowed request test
+
+From `redis/RedisRateLimiterTest.java:42-56`:
+
+```java
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class RedisRateLimiterTest {
+
+    private StringRedisTemplate redisTemplate;
+    private ValueOperations<String, String> valueOperations;
+    private RedisRateLimiter rateLimiter;
+
+    @BeforeEach
+    void setUp() {
+        redisTemplate = mock(StringRedisTemplate.class);
+        valueOperations = mock(ValueOperations.class);
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        Clock fixedClock = Clock.fixed(FIXED_TIME, ZoneOffset.UTC);
+        rateLimiter = new RedisRateLimiter(
+            redisTemplate, 
+            fixedClock, 
+            "ratelimiter"
+        );
+    }
+
+    @Test
+    void evaluateAllowsRequestWithinLimit() {
+        RateLimitPolicy policy = new RateLimitPolicy(
+            2, 
+            Duration.ofSeconds(10), 
+            "GLOBAL"
+        );
+        when(valueOperations.increment(anyString())).thenReturn(1L);
+        when(redisTemplate.expire(anyString(), any(Duration.class)))
+            .thenReturn(true);
+
+        RateLimitDecision decision = rateLimiter.evaluate("customer-1", policy);
+
+        assertThat(decision.isAllowed()).isTrue();
+        assertThat(decision.getRemainingTime()).isEqualTo(0L);
+        assertThat(decision.getRetryAfter()).isEmpty();
+        assertThat(decision.getResetAfter()).isPresent();
+        
+        verify(valueOperations).increment("ratelimiter:customer-1:1700000000000");
+        verify(redisTemplate).expire(
+            "ratelimiter:customer-1:1700000000000", 
+            Duration.ofSeconds(11)
+        );
+    }
+}
+```
+
+### Example: Blocked request test
+
+From `redis/RedisRateLimiterTest.java:58-70`:
+
+```java
+@Test
+void evaluateBlocksRequestWhenLimitExceeded() {
+    RateLimitPolicy policy = new RateLimitPolicy(
+        2, 
+        Duration.ofSeconds(10), 
+        "GLOBAL"
+    );
+    when(valueOperations.increment(anyString())).thenReturn(3L);
+
+    RateLimitDecision decision = rateLimiter.evaluate("customer-1", policy);
+
+    assertThat(decision.isAllowed()).isFalse();
+    assertThat(decision.getRemainingTime()).isGreaterThan(0L);
+    assertThat(decision.getRetryAfter()).isPresent();
+    assertThat(decision.getResetAfter()).isPresent();
+    
+    verify(redisTemplate, times(0)).expire(anyString(), any(Duration.class));
+}
+```
+
+### Example: Error handling test
+
+From `redis/RedisRateLimiterTest.java:84-98`:
+
+```java
+@Test
+void evaluateThrowsWhenRedisFailsInFailClosedMode() {
+    RedisRateLimiter failClosedLimiter = new RedisRateLimiter(
+        redisTemplate,
+        Clock.fixed(FIXED_TIME, ZoneOffset.UTC),
+        "ratelimiter",
+        false  // fail-closed mode
+    );
+    RateLimitPolicy policy = new RateLimitPolicy(
+        2, 
+        Duration.ofSeconds(10), 
+        "GLOBAL"
+    );
+    when(valueOperations.increment(anyString()))
+        .thenThrow(new RuntimeException("redis down"));
+
+    assertThatThrownBy(() -> failClosedLimiter.evaluate("customer-3", policy))
+        .isInstanceOf(RateLimiterBackendException.class)
+        .hasMessageContaining("Redis rate limiter backend failure");
+}
+
+@Test
+void evaluateAllowsWhenRedisFailsInFailOpenMode() {
+    RedisRateLimiter failOpenLimiter = new RedisRateLimiter(
+        redisTemplate,
+        Clock.fixed(FIXED_TIME, ZoneOffset.UTC),
+        "ratelimiter",
+        true  // fail-open mode
+    );
+    RateLimitPolicy policy = new RateLimitPolicy(
+        2, 
+        Duration.ofSeconds(10), 
+        "GLOBAL"
+    );
+    when(valueOperations.increment(anyString()))
+        .thenThrow(new RuntimeException("redis down"));
+
+    RateLimitDecision decision = failOpenLimiter.evaluate("customer-4", policy);
+
+    assertThat(decision.isAllowed()).isTrue();
+}
+```
+
+## Testing Spring Boot controllers
+
+<Steps>
+
+### Set up your test class
+
+Use `@SpringBootTest` and `@AutoConfigureMockMvc` for full integration testing:
+
+```java
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+class RateLimitIntegrationTest {
+
+    @Autowired
+    private MockMvc mockMvc;
+}
+```
+
+### Test rate limit enforcement
+
+Make multiple requests and verify the limit is enforced:
+
+```java
+@Test
+void shouldRateLimitRequests() throws Exception {
+    String endpoint = "/api/data";
+    int limit = 10;
+    
+    // Make requests up to the limit
+    for (int i = 0; i < limit; i++) {
+        mockMvc.perform(get(endpoint))
+            .andExpect(status().isOk());
+    }
+    
+    // Next request should be blocked
+    mockMvc.perform(get(endpoint))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(jsonPath("$.title").value("Rate limit exceeded"))
+        .andExpect(header().exists("Retry-After"));
+}
+```
+
+### Test scope isolation
+
+Verify that different scopes have independent limits:
+
+```java
+@Test
+void shouldIsolateLimitsByScope() throws Exception {
+    // Exhaust limit for user 1
+    for (int i = 0; i < 10; i++) {
+        mockMvc.perform(get("/api/data")
+            .header("X-User-Id", "user1"))
+            .andExpect(status().isOk());
+    }
+    
+    // User 1 should be rate limited
+    mockMvc.perform(get("/api/data")
+        .header("X-User-Id", "user1"))
+        .andExpect(status().isTooManyRequests());
+    
+    // User 2 should still be allowed
+    mockMvc.perform(get("/api/data")
+        .header("X-User-Id", "user2"))
+        .andExpect(status().isOk());
+}
+```
+
+### Test window expiration
+
+Verify that limits reset after the window expires:
+
+```java
+@Test
+void shouldResetAfterWindow() throws Exception {
+    String endpoint = "/api/data";
+    
+    // Exhaust the limit
+    for (int i = 0; i < 10; i++) {
+        mockMvc.perform(get(endpoint))
+            .andExpect(status().isOk());
+    }
+    
+    // Should be blocked
+    mockMvc.perform(get(endpoint))
+        .andExpect(status().isTooManyRequests());
+    
+    // Wait for window to expire (assuming 1 minute window)
+    Thread.sleep(61_000);
+    
+    // Should be allowed again
+    mockMvc.perform(get(endpoint))
+        .andExpect(status().isOk());
+}
+```
+
+</Steps>
+
+## Testing with Testcontainers
+
+Set up Redis using Testcontainers for realistic integration tests:
+
+```java
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+@SpringBootTest
+@Testcontainers
+class RateLimitWithRedisTest {
+
+    @Container
+    static GenericContainer<?> redis = new GenericContainer<>("redis:7.2-alpine")
+        .withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", redis::getHost);
+        registry.add("spring.data.redis.port", 
+            () -> redis.getMappedPort(6379).toString());
+    }
+
+    @Test
+    void rateLimitingWorksWithRealRedis() {
+        // Your test here
+    }
+}
+```
+
+## Testing custom components
+
+### Test custom key resolvers
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class CustomKeyResolverTest {
+
+    @Test
+    void resolvesKeyFromUserId() {
+        RateLimitKeyResolver resolver = new UserIdKeyResolver();
+        RateLimitContext context = mock(RateLimitContext.class);
+        
+        // Mock authentication
+        Authentication auth = mock(Authentication.class);
+        when(auth.getName()).thenReturn("john123");
+        when(auth.isAuthenticated()).thenReturn(true);
+        SecurityContextHolder.getContext().setAuthentication(auth);
+        
+        String key = resolver.resolveKey(context);
+        
+        assertThat(key).startsWith("user:john123:");
+    }
+    
+    @Test
+    void handlesUnauthenticatedUsers() {
+        RateLimitKeyResolver resolver = new UserIdKeyResolver();
+        RateLimitContext context = mock(RateLimitContext.class);
+        
+        SecurityContextHolder.clearContext();
+        
+        String key = resolver.resolveKey(context);
+        
+        assertThat(key).isEqualTo("anonymous");
+    }
+}
+```
+
+### Test custom policy providers
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitPolicyProvider;
+import io.github.v4runsharma.ratelimiter.model.RateLimitPolicy;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class CustomPolicyProviderTest {
+
+    @Test
+    void appliesOverrideWhenConfigured() {
+        ConfigurablePolicyProvider provider = new ConfigurablePolicyProvider();
+        provider.setOverride("test-limit", 100, 3600, "user");
+        
+        RateLimitContext context = mock(RateLimitContext.class);
+        RateLimit annotation = mock(RateLimit.class);
+        when(annotation.name()).thenReturn("test-limit");
+        when(context.getAnnotation()).thenReturn(annotation);
+        
+        RateLimitPolicy policy = provider.resolvePolicy(context);
+        
+        assertThat(policy.getLimit()).isEqualTo(100);
+        assertThat(policy.getWindow()).isEqualTo(Duration.ofHours(1));
+        assertThat(policy.getScope()).isEqualTo("user");
+    }
+    
+    @Test
+    void fallsBackToAnnotationWhenNoOverride() {
+        ConfigurablePolicyProvider provider = new ConfigurablePolicyProvider();
+        
+        RateLimitContext context = mock(RateLimitContext.class);
+        RateLimit annotation = mock(RateLimit.class);
+        when(annotation.name()).thenReturn("unknown");
+        when(annotation.limit()).thenReturn(10);
+        when(annotation.duration()).thenReturn(60L);
+        when(annotation.timeUnit()).thenReturn(TimeUnit.SECONDS);
+        when(annotation.scope()).thenReturn("global");
+        when(context.getAnnotation()).thenReturn(annotation);
+        
+        RateLimitPolicy policy = provider.resolvePolicy(context);
+        
+        assertThat(policy.getLimit()).isEqualTo(10);
+        assertThat(policy.getWindow()).isEqualTo(Duration.ofMinutes(1));
+    }
+}
+```
+
+## Testing best practices
+
+### Use unique keys for parallel tests
+
+Avoid test interference by using unique keys:
+
+```java
+@Test
+void testRateLimit() {
+    String uniqueKey = "test-" + UUID.randomUUID();
+    // Use uniqueKey in test
+}
+```
+
+### Clean up Redis between tests
+
+Flush Redis to ensure test isolation:
+
+```java
+@BeforeEach
+void setUp() {
+    redisTemplate.getConnectionFactory()
+        .getConnection()
+        .serverCommands()
+        .flushAll();
+}
+```
+
+### Use fixed clocks for deterministic tests
+
+Mock time to make tests predictable:
+
+```java
+private static final Instant FIXED_TIME = 
+    Instant.ofEpochMilli(1_700_000_005_123L);
+
+@Test
+void testWithFixedClock() {
+    Clock fixedClock = Clock.fixed(FIXED_TIME, ZoneOffset.UTC);
+    RedisRateLimiter limiter = new RedisRateLimiter(
+        redisTemplate,
+        fixedClock,
+        "test"
+    );
+    // Test with predictable timestamps
+}
+```
+
+### Test both success and failure paths
+
+Test that limits work correctly and that failures are handled:
+
+```java
+@Test
+void testAllowedRequests() {
+    // Test requests within limit
+}
+
+@Test
+void testBlockedRequests() {
+    // Test requests exceeding limit
+}
+
+@Test
+void testRedisFailure() {
+    // Test behavior when Redis is unavailable
+}
+```
+
+### Verify metrics are recorded
+
+Check that metrics are incremented correctly:
+
+```java
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
+@Test
+void recordsMetricsOnDecision() {
+    MeterRegistry registry = new SimpleMeterRegistry();
+    MicrometerRateLimitMetricsRecorder recorder = 
+        new MicrometerRateLimitMetricsRecorder(registry);
+    
+    RateLimitPolicy policy = new RateLimitPolicy(10, Duration.ofMinutes(1), "user");
+    RateLimitDecision decision = RateLimitDecision.allowed(0, Duration.ofMinutes(1));
+    
+    recorder.recordDecision("test-limit", policy, decision, Duration.ofMillis(5));
+    
+    assertThat(registry.counter("ratelimiter.requests", 
+        "name", "test-limit",
+        "outcome", "allowed"
+    ).count()).isEqualTo(1.0);
+}
+```

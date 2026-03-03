@@ -1,0 +1,185 @@
+---
+title: Overview
+description: Learn about the architecture and core components of the Spring Boot Redis Rate Limiter
+---
+
+The Spring Boot Redis Rate Limiter is a lightweight, production-ready library that provides distributed rate limiting using Redis as the backend store. It integrates seamlessly with Spring Boot applications through annotations and auto-configuration.
+
+## Architecture
+
+The library follows a modular architecture with clear separation of concerns:
+
+```mermaid
+graph TB
+    A[@RateLimit Annotation] --> B[RateLimitAspect]
+    B --> C[RateLimitEnforcer]
+    C --> D[RateLimitKeyResolver]
+    C --> E[RateLimitPolicyProvider]
+    C --> F[RateLimiter]
+    F --> G[RedisRateLimiter]
+    G --> H[Redis]
+    C --> I[MetricsRecorder]
+    I --> J[Micrometer]
+```
+
+## Core components
+
+The library is organized into several key packages, each handling a specific responsibility:
+
+### Core interfaces
+
+The `core` package defines the fundamental abstractions:
+
+<CardGroup cols={2}>
+  <Card title="RateLimiter" icon="gauge-high">
+    Evaluates whether a request should be allowed based on a key and policy
+  </Card>
+  <Card title="RateLimitEnforcer" icon="shield">
+    Orchestrates the rate limiting flow and throws exceptions when limits are exceeded
+  </Card>
+  <Card title="RateLimitContext" icon="sitemap">
+    Provides invocation context (method, arguments, target class) to resolvers
+  </Card>
+  <Card title="RateLimitPolicyProvider" icon="file-contract">
+    Resolves rate limit policies from annotations or external configuration
+  </Card>
+</CardGroup>
+
+### Redis implementation
+
+The `redis` package contains the `RedisRateLimiter` class (redis/RedisRateLimiter.java:19), which implements a **fixed-window rate limiting algorithm** using Redis atomic operations:
+
+- Uses `INCR` to atomically increment request counters
+- Sets `TTL` to automatically expire window buckets
+- Calculates window boundaries based on current time
+- Supports both fail-open and fail-closed behavior
+
+<Note>
+The fixed-window algorithm divides time into discrete windows. Each window starts at a deterministic timestamp calculated from the current time and window duration.
+</Note>
+
+### Key resolution
+
+The `key` package provides strategies for determining which Redis key (bucket) to charge:
+
+- **RateLimitKeyResolver**: Interface for custom key resolution strategies
+- **DefaultRateLimitKeyResolver** (key/DefaultRateLimitKeyResolver.java:11): Default implementation that combines scope, class name, and method name
+
+### Configuration
+
+The `config` package handles Spring Boot integration:
+
+- **RateLimiterProperties** (config/RateLimiterProperties.java:9): Externalized configuration via `application.properties`
+- **RateLimiterAutoConfiguration**: Auto-configures all beans when Redis is available
+
+## How it works
+
+When you annotate a method with `@RateLimit`, here's what happens:
+
+<Steps>
+  <Step title="Annotation processing">
+    Spring AOP intercepts the method call via `RateLimitAspect`
+  </Step>
+  <Step title="Context creation">
+    A `RateLimitContext` is created with method details and arguments
+  </Step>
+  <Step title="Key resolution">
+    The `RateLimitKeyResolver` generates a unique key (e.g., `global:com.example.ApiController#getData`)
+  </Step>
+  <Step title="Policy resolution">
+    The `RateLimitPolicyProvider` extracts the policy from the annotation (limit, duration, scope)
+  </Step>
+  <Step title="Rate limit evaluation">
+    The `RedisRateLimiter` checks if the request should be allowed:
+    - Calculates the current window boundary
+    - Increments the Redis counter for this window
+    - Compares count against the limit
+  </Step>
+  <Step title="Decision enforcement">
+    If allowed, the method executes normally. If denied, a `RateLimitExceededException` is thrown
+  </Step>
+</Steps>
+
+## Request lifecycle example
+
+Here's a complete example of how a rate-limited request flows through the system:
+
+```java
+@RateLimit(limit = 10, duration = 60, scope = "user")
+public ApiResponse getData(@RequestParam String userId) {
+    return apiService.fetchData(userId);
+}
+```
+
+<AccordionGroup>
+  <Accordion title="Step 1: Interception">
+    The AOP aspect intercepts the call before the method body executes.
+  </Accordion>
+  
+  <Accordion title="Step 2: Key generation">
+    The `DefaultRateLimitKeyResolver` generates a key like:
+    ```
+    user:com.example.ApiController#getData
+    ```
+    The `user` prefix comes from the scope attribute.
+  </Accordion>
+  
+  <Accordion title="Step 3: Window calculation">
+    For a 60-second window at timestamp 1,678,900,825,000 ms:
+    ```
+    windowStart = 1,678,900,825,000 - (1,678,900,825,000 % 60,000)
+                = 1,678,900,820,000
+    ```
+    This ensures all requests in the same minute use the same window.
+  </Accordion>
+  
+  <Accordion title="Step 4: Redis operation">
+    The limiter executes:
+    ```
+    INCR ratelimiter:user:com.example.ApiController#getData:1678900820000
+    EXPIRE ratelimiter:user:com.example.ApiController#getData:1678900820000 61
+    ```
+    The TTL is set to 61 seconds (60 + 1 second safety buffer).
+  </Accordion>
+  
+  <Accordion title="Step 5: Decision">
+    If the counter is ≤ 10, the request is allowed. Otherwise, a `RateLimitExceededException` is thrown with retry information.
+  </Accordion>
+</AccordionGroup>
+
+## Design principles
+
+The library is built on several key principles:
+
+<CardGroup cols={2}>
+  <Card title="Framework-agnostic core" icon="puzzle-piece">
+    Core interfaces don't depend on Spring Web, making them usable in any context (servlets, reactive, gRPC)
+  </Card>
+  <Card title="Extensibility" icon="plug">
+    You can provide custom implementations of `RateLimitKeyResolver`, `RateLimitPolicyProvider`, or even `RateLimiter`
+  </Card>
+  <Card title="Observability" icon="chart-line">
+    Built-in Micrometer metrics integration for monitoring rate limit decisions
+  </Card>
+  <Card title="Fault tolerance" icon="life-ring">
+    Configurable fail-open behavior ensures your application stays available even if Redis is down
+  </Card>
+</CardGroup>
+
+<Info>
+The library uses Spring Boot's auto-configuration, so you only need to add the dependency and configure Redis. All beans are created automatically.
+</Info>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Rate limiting algorithm" href="/concepts/rate-limiting" icon="clock">
+    Deep dive into the fixed-window algorithm and Redis operations
+  </Card>
+  <Card title="Key resolution" href="/concepts/key-resolution" icon="key">
+    Learn how keys are generated and how to customize resolution strategies
+  </Card>
+  <Card title="Fail-open vs fail-closed" href="/concepts/fail-open-closed" icon="shield-halved">
+    Understand fault tolerance strategies when Redis is unavailable
+  </Card>
+</CardGroup>

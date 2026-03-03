@@ -1,80 +1,256 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with Spring Boot Redis Rate Limiter in under 10 minutes
 ---
 
-## Get started in three steps
+This guide walks you through adding rate limiting to your Spring Boot application using Redis. You'll go from zero to a working rate-limited endpoint in just a few steps.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- Java 17 or higher
+- Spring Boot 3.x application
+- Access to a Redis instance (or Docker to run one locally)
 
-### Step 2: Deploy your changes
+## Step-by-step guide
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Steps>
+  <Step title="Add the dependency">
+    Add the Spring Boot Redis Rate Limiter starter to your project:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    <CodeGroup>
+    ```xml Maven
+    <dependency>
+      <groupId>io.github.v4runsharma</groupId>
+      <artifactId>spring-boot-starter-redis-ratelimiter</artifactId>
+      <version>1.0-SNAPSHOT</version>
+    </dependency>
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```gradle Gradle
+    implementation 'io.github.v4runsharma:spring-boot-starter-redis-ratelimiter:1.0-SNAPSHOT'
+    ```
+    </CodeGroup>
 
-### Step 3: Go live
+    <Note>
+      The starter uses Spring Boot's auto-configuration, so no manual bean wiring is required.
+    </Note>
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Start Redis">
+    You need a running Redis instance. If you don't have one, start Redis using Docker:
+
+    ```bash
+    docker run --name redis-ratelimiter -p 6379:6379 -d redis:7-alpine
+    ```
+
+    This command starts Redis 7 on port 6379 in the background.
+  </Step>
+
+  <Step title="Configure Redis connection">
+    Add Redis connection properties to your `application.yml` or `application.properties`:
+
+    <CodeGroup>
+    ```yaml application.yml
+    spring:
+      data:
+        redis:
+          host: localhost
+          port: 6379
+    ```
+
+    ```properties application.properties
+    spring.data.redis.host=localhost
+    spring.data.redis.port=6379
+    ```
+    </CodeGroup>
+
+    <Info>
+      If you're using a cloud Redis service, update the host and port accordingly. You can also configure authentication using `spring.data.redis.password`.
+    </Info>
+  </Step>
+
+  <Step title="Create a service with @RateLimit">
+    Add the `@RateLimit` annotation to any service method you want to protect. Here's a billing service example:
+
+    ```java BillingService.java
+    import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+    import java.util.concurrent.TimeUnit;
+    import org.springframework.stereotype.Service;
+
+    @Service
+    public class BillingService {
+
+      @RateLimit(
+          name = "invoice-create",
+          scope = "GLOBAL",
+          limit = 10,
+          duration = 1,
+          timeUnit = TimeUnit.MINUTES
+      )
+      public String createInvoice(String accountId) {
+        return "Invoice created for account: " + accountId;
+      }
+    }
+    ```
+
+    This configuration allows 10 requests per minute globally across all users.
+
+    <Tip>
+      The `name` attribute is used for metrics and logging. The `scope` helps organize rate limits by category.
+    </Tip>
+  </Step>
+
+  <Step title="Create a REST controller">
+    Expose your rate-limited service through a REST endpoint:
+
+    ```java BillingController.java
+    import org.springframework.web.bind.annotation.*;
+
+    @RestController
+    @RequestMapping("/api/billing")
+    public class BillingController {
+
+      private final BillingService billingService;
+
+      public BillingController(BillingService billingService) {
+        this.billingService = billingService;
+      }
+
+      @PostMapping("/invoices")
+      public String createInvoice(@RequestParam String accountId) {
+        return billingService.createInvoice(accountId);
+      }
+    }
+    ```
+  </Step>
+
+  <Step title="Start your application">
+    Run your Spring Boot application:
+
+    ```bash
+    ./mvnw spring-boot:run
+    ```
+
+    Or if you're using Gradle:
+
+    ```bash
+    ./gradlew bootRun
+    ```
+
+    Watch for the auto-configuration log messages confirming the rate limiter is active.
+  </Step>
+
+  <Step title="Test the rate limit">
+    Make repeated requests to your endpoint to trigger the rate limit. You can use curl in a loop:
+
+    ```bash
+    for i in {1..15}; do
+      curl -X POST "http://localhost:8080/api/billing/invoices?accountId=ACC123"
+      echo ""
+    done
+    ```
+
+    The first 10 requests should succeed with a 200 response. Starting from the 11th request, you'll see rate limit errors.
+  </Step>
+
+  <Step title="Observe the HTTP 429 response">
+    When the rate limit is exceeded, you'll receive an HTTP 429 Too Many Requests response with detailed information:
+
+    ```json
+    {
+      "type": "about:blank",
+      "title": "Rate limit exceeded",
+      "status": 429,
+      "detail": "Rate limit exceeded: invoice-create (limit=10, window=PT1M, remaining=50)",
+      "timestamp": "2026-03-03T10:30:00Z",
+      "key": "GLOBAL:com.example.BillingService#createInvoice",
+      "limit": 10,
+      "windowSeconds": 60,
+      "name": "invoice-create",
+      "retryAfterSeconds": 50
+    }
+    ```
+
+    The response includes helpful headers:
+    - `Retry-After`: Seconds until you can retry
+    - `RateLimit-Limit`: Maximum requests allowed
+    - `RateLimit-Remaining`: Requests remaining (0 when blocked)
+    - `RateLimit-Reset`: Seconds until the window resets
+
+    <Info>
+      The response follows RFC 7807 Problem Details format, making it easy to parse and handle in client applications.
+    </Info>
+  </Step>
+
+  <Step title="Verify Redis keys">
+    Check that rate limit data is being stored in Redis:
+
+    ```bash
+    docker exec -it redis-ratelimiter redis-cli
+    ```
+
+    Then in the Redis CLI:
+
+    ```redis
+    KEYS ratelimiter:*
+    GET ratelimiter:GLOBAL:com.example.BillingService#createInvoice
+    ```
+
+    You'll see the current request count and the key's TTL (time to live).
+  </Step>
+
+  <Step title="Configure optional settings">
+    Customize the rate limiter behavior by adding properties to your configuration:
+
+    ```yaml application.yml
+    ratelimiter:
+      enabled: true
+      redis-key-prefix: ratelimiter
+      fail-open: false
+      include-http-headers: true
+      metrics-enabled: true
+    ```
+
+    Configuration options:
+    - `enabled`: Enable or disable rate limiting globally
+    - `redis-key-prefix`: Prefix for Redis keys (default: `ratelimiter`)
+    - `fail-open`: If `true`, allows requests when Redis is unavailable
+    - `include-http-headers`: Include rate limit headers in 429 responses
+    - `metrics-enabled`: Enable Micrometer metrics collection
+
+    <Tip>
+      Set `fail-open: true` in development to continue working even if Redis is down. Keep it `false` in production for strict rate limiting.
+    </Tip>
+  </Step>
+</Steps>
+
+## What happens under the hood
+
+When a request hits a rate-limited method:
+
+1. The AOP interceptor detects the `@RateLimit` annotation
+2. The policy provider resolves the limit and window duration
+3. The key resolver generates a Redis key based on scope and method
+4. Redis executes `INCR` on the key and sets a TTL if needed
+5. If the count exceeds the limit, a `RateLimitExceededException` is thrown
+6. The exception handler converts it to an HTTP 429 response
+7. Metrics are recorded for monitoring
+
+<Note>
+  The implementation uses a fixed-window algorithm with Redis `INCR` and TTL commands. No Lua scripts are required, making it simple and Redis cluster-compatible.
+</Note>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have basic rate limiting working, you can:
 
-<CardGroup cols={2}>
+- Learn about [per-user rate limiting](/advanced/per-user-limits) with custom key resolvers
+- Configure [class-level rate limits](/advanced/class-level) for shared policies
+- Monitor rate limiting with [Micrometer metrics](/monitoring/metrics)
+- Understand the [fail-open vs fail-closed](/configuration/failure-modes) strategies
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+<Tip>
+  For production deployments, consider combining this method-level rate limiting with API gateway-level throttling for defense in depth.
+</Tip>

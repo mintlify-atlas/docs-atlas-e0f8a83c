@@ -1,0 +1,37 @@
+---
+title: Changelog
+description: Version history and changes for Spring Boot Redis Rate Limiter
+---
+
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+### Added
+- Public API surface for rate-limiter annotation, model, and core contracts
+- Redis-backed fixed-window `RateLimiter` implementation
+- Spring Boot 3 auto-configuration via `AutoConfiguration.imports`
+- HTTP 429 exception handler with optional `RateLimit-*` headers
+- Micrometer metrics recorder integration
+- Auto-configuration tests and Redis limiter tests
+- Docker-optional integration tests for Redis behavior and concurrency
+
+## Version history
+
+This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+### Future releases
+
+Planned features for future versions:
+
+- Custom policy providers for external configuration
+- Support for sliding window algorithm
+- Support for token bucket algorithm
+- Distributed rate limiting with Redis Cluster
+- WebFlux/Reactive support
+- Admin API for runtime limit adjustments
+- Enhanced metrics and observability
+
+## Contributing
+
+See the [contributing guide](/resources/contributing) for information on how to contribute to this project.

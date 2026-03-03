@@ -1,0 +1,410 @@
+---
+title: Troubleshooting
+description: Common issues and solutions when using Spring Boot Redis Rate Limiter
+---
+
+## Common issues
+
+<Accordion title="Rate limits not being enforced">
+  **Symptoms:**
+  - Requests exceed configured limits without returning HTTP 429
+  - No rate limiting appears to be active
+
+  **Possible causes and solutions:**
+
+  1. **Rate limiter is disabled in configuration**
+     ```properties
+     # Check that this is set to true
+     ratelimiter.enabled=true
+     ```
+
+  2. **Annotation has `enabled=false`**
+     ```java
+     @RateLimit(
+         name = "test",
+         scope = "GLOBAL",
+         limit = 10,
+         duration = 1,
+         timeUnit = TimeUnit.MINUTES,
+         enabled = false  // Remove or set to true
+     )
+     ```
+
+  3. **Method is not proxied by Spring AOP**
+     - Ensure the annotated method is `public`
+     - Call the method from outside the class (not `this.method()`)
+     - The class must be a Spring bean (`@Service`, `@Component`, etc.)
+
+  4. **Redis connection is not configured**
+     ```properties
+     spring.data.redis.host=localhost
+     spring.data.redis.port=6379
+     ```
+
+  5. **Fail-open is enabled and Redis is down**
+     ```properties
+     # This allows all requests when Redis is unavailable
+     ratelimiter.fail-open=true
+     ```
+</Accordion>
+
+<Accordion title="Redis connection errors">
+  **Symptoms:**
+  - `io.lettuce.core.RedisConnectionException`
+  - Application fails to start
+  - Rate limit checks fail with connection errors
+
+  **Solutions:**
+
+  1. **Verify Redis is running**
+     ```bash
+     # Check if Redis is accessible
+     redis-cli ping
+     # Should return: PONG
+     ```
+
+  2. **Check Redis configuration**
+     ```yaml
+     spring:
+       data:
+         redis:
+           host: localhost  # Correct host
+           port: 6379       # Correct port
+           password:        # Add if required
+           timeout: 2000ms  # Increase if needed
+     ```
+
+  3. **Start Redis locally with Docker**
+     ```bash
+     docker run --name redis-ratelimiter -p 6379:6379 -d redis:7-alpine
+     ```
+
+  4. **Enable fail-open for development**
+     ```properties
+     # Temporarily allow requests when Redis is down
+     ratelimiter.fail-open=true
+     ```
+
+  5. **Check network connectivity**
+     ```bash
+     # Test Redis connection
+     telnet localhost 6379
+     ```
+</Accordion>
+
+<Accordion title="HTTP 429 not returning proper response">
+  **Symptoms:**
+  - Exception is thrown but no HTTP 429 response
+  - Generic 500 error instead of 429
+  - Missing rate limit headers
+
+  **Solutions:**
+
+  1. **Exception handler is not registered**
+     - The starter auto-configures `RateLimitExceptionHandler` for Spring MVC
+     - Verify you're using Spring Boot 3.x with servlet support
+     - Check that `@ControllerAdvice` is not disabled
+
+  2. **Custom exception handler overrides default**
+     - If you have a custom `@ControllerAdvice`, ensure it doesn't catch `RateLimitExceededException`
+     - Or handle it explicitly:
+     ```java
+     @ControllerAdvice
+     public class GlobalExceptionHandler {
+       @ExceptionHandler(RateLimitExceededException.class)
+       public ResponseEntity<ProblemDetail> handleRateLimit(RateLimitExceededException ex) {
+         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+             HttpStatus.TOO_MANY_REQUESTS,
+             ex.getMessage()
+         );
+         return ResponseEntity.status(429).body(problem);
+       }
+     }
+     ```
+
+  3. **Headers are disabled**
+     ```properties
+     # Enable rate limit headers
+     ratelimiter.include-http-headers=true
+     ```
+
+  4. **Using reactive/WebFlux**
+     - The current version only supports Spring MVC (servlet)
+     - WebFlux support requires custom exception handling
+</Accordion>
+
+<Accordion title="Rate limits not working per-user">
+  **Symptoms:**
+  - All users share the same rate limit
+  - Different users get blocked together
+  - Rate limit doesn't distinguish between users
+
+  **Solutions:**
+
+  1. **Default key resolver doesn't extract user context**
+     - The default resolver uses `scope:className#methodName`
+     - Implement a custom `RateLimitKeyResolver`:
+     ```java
+     @Component
+     public class UserIdKeyResolver implements RateLimitKeyResolver {
+       @Override
+       public String resolveKey(RateLimitContext context) {
+         Object[] args = context.getArguments();
+         String userId = String.valueOf(args[0]);
+         return "user:" + userId + ":" + context.getMethod().getName();
+       }
+     }
+     ```
+
+  2. **Key resolver not specified in annotation**
+     ```java
+     @RateLimit(
+         name = "per-user-limit",
+         scope = "USER",
+         keyResolver = UserIdKeyResolver.class,  // Add this
+         limit = 10,
+         duration = 1,
+         timeUnit = TimeUnit.MINUTES
+     )
+     ```
+
+  3. **User ID not available in method arguments**
+     - Ensure the user identifier is passed as a method parameter
+     - Or extract it from Spring Security context in your resolver
+
+  4. **Scope is set to GLOBAL**
+     - Using `scope = "GLOBAL"` creates a shared limit
+     - Change to `scope = "USER"` or custom scope
+</Accordion>
+
+<Accordion title="Metrics not appearing in Prometheus/Grafana">
+  **Symptoms:**
+  - Rate limiter metrics not visible
+  - No `ratelimiter.*` metrics in `/actuator/prometheus`
+
+  **Solutions:**
+
+  1. **Metrics are disabled**
+     ```properties
+     # Enable metrics
+     ratelimiter.metrics-enabled=true
+     ```
+
+  2. **Micrometer not on classpath**
+     ```xml
+     <dependency>
+       <groupId>io.micrometer</groupId>
+       <artifactId>micrometer-registry-prometheus</artifactId>
+     </dependency>
+     ```
+
+  3. **Actuator endpoints not exposed**
+     ```properties
+     management.endpoints.web.exposure.include=health,info,prometheus
+     ```
+
+  4. **No rate limit requests have been made**
+     - Metrics only appear after at least one rate-limited request
+     - Trigger some requests to populate metrics
+
+  5. **Check metric names**
+     - `ratelimiter.requests` (counter, tagged with `outcome=allowed|blocked`)
+     - `ratelimiter.errors` (counter)
+     - `ratelimiter.evaluate.latency` (timer)
+</Accordion>
+
+<Accordion title="High latency on rate-limited methods">
+  **Symptoms:**
+  - Slow response times on annotated methods
+  - Redis operations taking too long
+
+  **Solutions:**
+
+  1. **Redis server is overloaded or slow**
+     - Check Redis metrics: `redis-cli info stats`
+     - Consider scaling Redis or using Redis cluster
+
+  2. **Network latency to Redis**
+     - Use Redis in the same region/data center
+     - Increase connection pool size:
+     ```yaml
+     spring:
+       data:
+         redis:
+           lettuce:
+             pool:
+               max-active: 20
+               max-idle: 10
+     ```
+
+  3. **Timeout is too high**
+     ```yaml
+     spring:
+       data:
+         redis:
+           timeout: 1000ms  # Reduce if needed
+     ```
+
+  4. **Too many Redis keys**
+     - Use shorter rate limit windows
+     - Implement key expiration strategy
+     - Monitor Redis memory usage
+</Accordion>
+
+<Accordion title="Redis keys accumulating and not expiring">
+  **Symptoms:**
+  - Redis memory usage keeps growing
+  - Rate limit keys not being cleaned up
+
+  **Solutions:**
+
+  1. **Check key TTL**
+     ```bash
+     # Connect to Redis
+     redis-cli
+     
+     # Find rate limiter keys
+     KEYS ratelimiter:*
+     
+     # Check TTL (should match rate limit duration)
+     TTL ratelimiter:global:com.example.Service#method
+     ```
+
+  2. **TTL not being set properly**
+     - This is handled automatically by the starter
+     - Check for Redis version compatibility (Redis 2.6+)
+
+  3. **Configure maxmemory policy**
+     ```bash
+     # In redis.conf or via CONFIG SET
+     maxmemory 256mb
+     maxmemory-policy allkeys-lru
+     ```
+
+  4. **Manual cleanup if needed**
+     ```bash
+     # Delete all rate limiter keys
+     redis-cli --scan --pattern "ratelimiter:*" | xargs redis-cli del
+     ```
+</Accordion>
+
+<Accordion title="Integration tests fail with 'Cannot connect to Docker'">
+  **Symptoms:**
+  - `org.testcontainers.containers.ContainerLaunchException`
+  - Tests fail with Docker connection errors
+
+  **Solutions:**
+
+  1. **Docker is not running**
+     ```bash
+     # Start Docker Desktop (macOS/Windows)
+     # Or start Docker daemon (Linux)
+     sudo systemctl start docker
+     ```
+
+  2. **Run tests without integration tests**
+     ```bash
+     # Unit tests only
+     mvn test
+     
+     # Skip integration tests
+     mvn verify -DskipITs=true
+     ```
+
+  3. **Configure Testcontainers**
+     ```properties
+     # ~/.testcontainers.properties
+     docker.client.strategy=org.testcontainers.dockerclient.UnixSocketClientProviderStrategy
+     ```
+
+  4. **Use @Testcontainers(disabledWithoutDocker = true)**
+     ```java
+     @Testcontainers(disabledWithoutDocker = true)
+     class MyIntegrationTest {
+       // Tests will be skipped if Docker is unavailable
+     }
+     ```
+</Accordion>
+
+<Accordion title="Rate limit resets unexpectedly">
+  **Symptoms:**
+  - Rate limit counter resets before window expires
+  - Inconsistent rate limiting behavior
+
+  **Possible causes:**
+
+  1. **Application restarts**
+     - Redis keys persist across restarts
+     - But in-memory state is lost
+
+  2. **Redis restart or failover**
+     - Keys are lost if Redis has no persistence
+     - Enable RDB or AOF persistence
+
+  3. **Key name changes**
+     - Changing class names, method names, or key resolver logic creates new keys
+     - Old keys will expire naturally
+
+  4. **Redis eviction policy**
+     - Check `maxmemory-policy` setting
+     - Use `volatile-lru` or `allkeys-lru`
+
+  5. **Clock skew**
+     - Ensure system clocks are synchronized (NTP)
+     - Redis and app servers should have consistent time
+</Accordion>
+
+## Debugging tips
+
+### Enable debug logging
+
+```properties
+logging.level.io.github.v4runsharma.ratelimiter=DEBUG
+logging.level.org.springframework.data.redis=DEBUG
+```
+
+### Monitor Redis keys in real-time
+
+```bash
+# Watch keys being created/expired
+redis-cli --scan --pattern "ratelimiter:*"
+
+# Monitor Redis commands
+redis-cli monitor
+```
+
+### Check Spring Boot auto-configuration
+
+```bash
+# Run with debug mode
+java -jar app.jar --debug
+
+# Or in application.properties
+debug=true
+```
+
+### Verify bean registration
+
+```java
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
+
+@Component
+public class BeanChecker implements CommandLineRunner {
+  private final ApplicationContext context;
+
+  public BeanChecker(ApplicationContext context) {
+    this.context = context;
+  }
+
+  @Override
+  public void run(String... args) {
+    // Check if rate limiter beans are registered
+    String[] beans = context.getBeanNamesForType(
+        io.github.v4runsharma.ratelimiter.core.RateLimiter.class
+    );
+    System.out.println("RateLimiter beans: " + Arrays.toString(beans));
+  }
+}
+```

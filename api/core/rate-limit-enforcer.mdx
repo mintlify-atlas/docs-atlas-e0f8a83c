@@ -1,0 +1,210 @@
+---
+title: RateLimitEnforcer
+description: High-level interface for orchestrating rate limit enforcement
+---
+
+## Overview
+
+The `RateLimitEnforcer` interface is the high-level entry point for enforcing rate limits against an invocation context. It orchestrates the entire flow: resolving the key, resolving the policy, and evaluating the limit.
+
+**Package:** `io.github.v4runsharma.ratelimiter.core`
+
+**Source:** `RateLimitEnforcer.java:12`
+
+## Purpose
+
+This abstraction exists to:
+- Keep orchestration logic (resolve key + resolve policy + evaluate) behind one contract
+- Allow AOP/web interceptors to depend on a single abstraction
+- Simplify testing and custom enforcement strategies
+
+## Methods
+
+### evaluate
+
+```java
+RateLimitDecision evaluate(RateLimitContext context)
+```
+
+Evaluates the rate limit for the given invocation context without throwing exceptions.
+
+**Typical implementation flow:**
+1. Resolve the rate limit key from context
+2. Resolve the rate limit policy from context
+3. Call `RateLimiter.evaluate(key, policy)`
+
+<ParamField path="context" type="RateLimitContext" required>
+  The invocation context containing the annotation, method, target class, and arguments.
+</ParamField>
+
+<ResponseField name="return" type="RateLimitDecision">
+  A decision describing whether the invocation is allowed, along with retry timing information.
+</ResponseField>
+
+### enforce
+
+```java
+void enforce(RateLimitContext context) throws RateLimitExceededException
+```
+
+Enforces the rate limit for the given invocation context, throwing an exception if denied.
+
+**Typical implementation flow:**
+1. Call `evaluate(context)`
+2. If the decision is denied, throw `RateLimitExceededException`
+
+<ParamField path="context" type="RateLimitContext" required>
+  The invocation context containing the annotation, method, target class, and arguments.
+</ParamField>
+
+**Throws:** `RateLimitExceededException` if the rate limit is exceeded.
+
+## Usage example
+
+### Using in an interceptor
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitEnforcer;
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import org.springframework.web.servlet.HandlerInterceptor;
+
+public class RateLimitInterceptor implements HandlerInterceptor {
+    
+    private final RateLimitEnforcer enforcer;
+    
+    public RateLimitInterceptor(RateLimitEnforcer enforcer) {
+        this.enforcer = enforcer;
+    }
+    
+    @Override
+    public boolean preHandle(
+        HttpServletRequest request,
+        HttpServletResponse response,
+        Object handler
+    ) throws Exception {
+        if (handler instanceof HandlerMethod handlerMethod) {
+            RateLimit annotation = handlerMethod.getMethodAnnotation(RateLimit.class);
+            
+            if (annotation != null && annotation.enabled()) {
+                RateLimitContext context = createContext(handlerMethod, request);
+                
+                try {
+                    enforcer.enforce(context);
+                } catch (RateLimitExceededException ex) {
+                    response.setStatus(429);
+                    response.setHeader(
+                        "Retry-After", 
+                        String.valueOf(ex.getDecision().getRetryAfterMillis() / 1000)
+                    );
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    
+    private RateLimitContext createContext(
+        HandlerMethod handler, 
+        HttpServletRequest request
+    ) {
+        // Create context from handler and request
+        // Implementation details...
+        return context;
+    }
+}
+```
+
+### Check without throwing
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitEnforcer;
+import io.github.v4runsharma.ratelimiter.model.RateLimitDecision;
+
+public class RateLimitService {
+    
+    private final RateLimitEnforcer enforcer;
+    
+    public RateLimitService(RateLimitEnforcer enforcer) {
+        this.enforcer = enforcer;
+    }
+    
+    public void processRequest(RateLimitContext context) {
+        // Evaluate without throwing
+        RateLimitDecision decision = enforcer.evaluate(context);
+        
+        if (decision.isAllowed()) {
+            // Process the request
+            System.out.println("Processing request");
+        } else {
+            // Handle rate limit gracefully
+            System.out.println("Rate limited. Retry after: " 
+                + decision.getRetryAfterMillis() + "ms");
+            
+            decision.getRetryAfter().ifPresent(duration -> {
+                System.out.println("Retry after duration: " + duration);
+            });
+        }
+    }
+}
+```
+
+### Custom enforcer implementation
+
+```java
+import io.github.v4runsharma.ratelimiter.core.*;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import io.github.v4runsharma.ratelimiter.model.*;
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+
+public class CustomRateLimitEnforcer implements RateLimitEnforcer {
+    
+    private final RateLimiter rateLimiter;
+    private final RateLimitKeyResolver keyResolver;
+    private final RateLimitPolicyProvider policyProvider;
+    
+    public CustomRateLimitEnforcer(
+        RateLimiter rateLimiter,
+        RateLimitKeyResolver keyResolver,
+        RateLimitPolicyProvider policyProvider
+    ) {
+        this.rateLimiter = rateLimiter;
+        this.keyResolver = keyResolver;
+        this.policyProvider = policyProvider;
+    }
+    
+    @Override
+    public RateLimitDecision evaluate(RateLimitContext context) {
+        // Resolve the key and policy
+        String key = keyResolver.resolveKey(context);
+        RateLimitPolicy policy = policyProvider.resolvePolicy(context);
+        
+        // Evaluate using the rate limiter
+        return rateLimiter.evaluate(key, policy);
+    }
+    
+    @Override
+    public void enforce(RateLimitContext context) throws RateLimitExceededException {
+        RateLimitDecision decision = evaluate(context);
+        
+        if (!decision.isAllowed()) {
+            String name = context.getAnnotation().name();
+            String key = keyResolver.resolveKey(context);
+            RateLimitPolicy policy = policyProvider.resolvePolicy(context);
+            
+            throw new RateLimitExceededException(name, key, policy, decision);
+        }
+    }
+}
+```
+
+## Default implementation
+
+The library provides `DefaultRateLimitEnforcer` which implements this interface and is automatically configured by the Spring Boot starter.
+
+## Related
+
+- [RateLimiter](/api/core/rate-limiter) - Core evaluation interface
+- [RateLimitKeyResolver](/api/key/rate-limit-key-resolver) - Key resolution
+- [RateLimitPolicyProvider](/api/core/rate-limit-policy-provider) - Policy resolution
+- [RateLimitExceededException](/api/exceptions/rate-limit-exceeded) - Exception thrown when rate limit is exceeded

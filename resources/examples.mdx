@@ -1,0 +1,445 @@
+---
+title: Examples
+description: Comprehensive real-world examples for implementing rate limiting in Spring Boot applications
+---
+
+## Basic rate limiting
+
+The simplest way to add rate limiting is with the `@RateLimit` annotation on a service method.
+
+### Global rate limit
+
+```java
+import io.github.v4runsharma.ratelimiter.annotation.RateLimit;
+import java.util.concurrent.TimeUnit;
+import org.springframework.stereotype.Service;
+
+@Service
+public class BillingService {
+
+  @RateLimit(
+      name = "invoice-create",
+      scope = "GLOBAL",
+      limit = 10,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES
+  )
+  public String createInvoice(String accountId) {
+    return "Invoice created for " + accountId;
+  }
+}
+```
+
+This limits all calls to `createInvoice` to 10 requests per minute across all users.
+
+## Per-user rate limiting
+
+### Using custom key resolver
+
+For per-user or per-tenant limits, implement a custom `RateLimitKeyResolver`:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.stereotype.Component;
+
+@Component
+public class UserIdKeyResolver implements RateLimitKeyResolver {
+  @Override
+  public String resolveKey(RateLimitContext context) {
+    Object[] args = context.getArguments();
+    String userId = String.valueOf(args[0]);
+    return "user:" + userId + ":" + context.getMethod().getName();
+  }
+}
+```
+
+Apply it in your service:
+
+```java
+@Service
+public class OrderService {
+
+  @RateLimit(
+      name = "order-create-per-user",
+      scope = "USER",
+      keyResolver = UserIdKeyResolver.class,
+      limit = 5,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES
+  )
+  public String createOrder(String userId, String productId) {
+    return "Order created for user " + userId;
+  }
+}
+```
+
+## Per-IP rate limiting
+
+### IP-based key resolver
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+@Component
+public class IpAddressKeyResolver implements RateLimitKeyResolver {
+  @Override
+  public String resolveKey(RateLimitContext context) {
+    ServletRequestAttributes attributes = 
+        (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    if (attributes != null) {
+      HttpServletRequest request = attributes.getRequest();
+      String ipAddress = request.getRemoteAddr();
+      return "ip:" + ipAddress + ":" + context.getMethod().getName();
+    }
+    return "ip:unknown:" + context.getMethod().getName();
+  }
+}
+```
+
+Apply in a REST controller:
+
+```java
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class PublicApiController {
+
+  @RateLimit(
+      name = "public-search",
+      scope = "IP",
+      keyResolver = IpAddressKeyResolver.class,
+      limit = 100,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  @GetMapping("/search")
+  public String search(@RequestParam String query) {
+    return "Search results for: " + query;
+  }
+}
+```
+
+## Class-level rate limiting
+
+Apply `@RateLimit` to an entire class to protect all methods:
+
+```java
+import org.springframework.stereotype.Service;
+
+@Service
+@RateLimit(
+    name = "payment-service",
+    scope = "GLOBAL",
+    limit = 1000,
+    duration = 1,
+    timeUnit = TimeUnit.HOURS
+)
+public class PaymentService {
+
+  public void processPayment(String transactionId) {
+    // Protected by class-level rate limit
+  }
+
+  @RateLimit(
+      name = "refund-process",
+      scope = "GLOBAL",
+      limit = 100,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  public void processRefund(String transactionId) {
+    // Method-level annotation overrides class-level
+  }
+}
+```
+
+## Different time windows
+
+<CardGroup cols={2}>
+  <Card title="Short window" icon="clock">
+    ```java
+    @RateLimit(
+        name = "otp-send",
+        scope = "USER",
+        keyResolver = UserIdKeyResolver.class,
+        limit = 3,
+        duration = 30,
+        timeUnit = TimeUnit.SECONDS
+    )
+    public void sendOtp(String userId) {
+      // 3 OTPs per 30 seconds per user
+    }
+    ```
+  </Card>
+
+  <Card title="Long window" icon="calendar">
+    ```java
+    @RateLimit(
+        name = "report-generate",
+        scope = "USER",
+        keyResolver = UserIdKeyResolver.class,
+        limit = 10,
+        duration = 24,
+        timeUnit = TimeUnit.HOURS
+    )
+    public void generateReport(String userId) {
+      // 10 reports per day per user
+    }
+    ```
+  </Card>
+</CardGroup>
+
+## API key-based rate limiting
+
+### API key resolver
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
+
+@Component
+public class ApiKeyResolver implements RateLimitKeyResolver {
+  @Override
+  public String resolveKey(RateLimitContext context) {
+    ServletRequestAttributes attributes = 
+        (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+    if (attributes != null) {
+      HttpServletRequest request = attributes.getRequest();
+      String apiKey = request.getHeader("X-API-Key");
+      if (apiKey != null && !apiKey.isBlank()) {
+        return "apikey:" + apiKey + ":" + context.getMethod().getName();
+      }
+    }
+    return "apikey:unknown:" + context.getMethod().getName();
+  }
+}
+```
+
+### REST endpoint with API key limiting
+
+```java
+@RestController
+@RequestMapping("/api/v1")
+public class ApiController {
+
+  @RateLimit(
+      name = "api-data-fetch",
+      scope = "USER",
+      keyResolver = ApiKeyResolver.class,
+      limit = 1000,
+      duration = 1,
+      timeUnit = TimeUnit.DAYS
+  )
+  @GetMapping("/data")
+  public String getData() {
+    return "Protected data";
+  }
+}
+```
+
+## Multiple limits on the same method
+
+You can layer multiple rate limits by creating wrapper methods:
+
+```java
+@Service
+public class UploadService {
+
+  @RateLimit(
+      name = "upload-per-minute",
+      scope = "USER",
+      keyResolver = UserIdKeyResolver.class,
+      limit = 10,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES
+  )
+  public String uploadFileRateLimitMinute(String userId, byte[] data) {
+    return uploadFileRateLimitHour(userId, data);
+  }
+
+  @RateLimit(
+      name = "upload-per-hour",
+      scope = "USER",
+      keyResolver = UserIdKeyResolver.class,
+      limit = 100,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  public String uploadFileRateLimitHour(String userId, byte[] data) {
+    return uploadFileInternal(userId, data);
+  }
+
+  private String uploadFileInternal(String userId, byte[] data) {
+    // Actual upload logic
+    return "File uploaded successfully";
+  }
+}
+```
+
+## Static key for grouping operations
+
+Use the `key` attribute to group different methods under the same limit:
+
+```java
+@Service
+public class NotificationService {
+
+  @RateLimit(
+      name = "notifications",
+      scope = "USER",
+      key = "all-notifications",
+      keyResolver = UserIdKeyResolver.class,
+      limit = 50,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  public void sendEmail(String userId, String message) {
+    // Send email
+  }
+
+  @RateLimit(
+      name = "notifications",
+      scope = "USER",
+      key = "all-notifications",
+      keyResolver = UserIdKeyResolver.class,
+      limit = 50,
+      duration = 1,
+      timeUnit = TimeUnit.HOURS
+  )
+  public void sendSms(String userId, String message) {
+    // Send SMS
+  }
+}
+```
+
+Both methods share the same 50 requests/hour limit per user.
+
+## Disabling rate limiting conditionally
+
+Use the `enabled` flag to disable specific limits:
+
+```java
+@Service
+public class AdminService {
+
+  @RateLimit(
+      name = "admin-operation",
+      scope = "GLOBAL",
+      limit = 10,
+      duration = 1,
+      timeUnit = TimeUnit.MINUTES,
+      enabled = false  // Temporarily disabled
+  )
+  public void performAdminTask() {
+    // Not rate limited when enabled=false
+  }
+}
+```
+
+## Configuration examples
+
+### Application properties
+
+```properties
+# Enable/disable rate limiting globally
+ratelimiter.enabled=true
+
+# Redis key prefix for all rate limit buckets
+ratelimiter.redis-key-prefix=myapp:ratelimiter
+
+# Fail-open: allow requests when Redis is unavailable
+ratelimiter.fail-open=false
+
+# Include rate limit headers in 429 responses
+ratelimiter.include-http-headers=true
+
+# Enable Micrometer metrics
+ratelimiter.metrics-enabled=true
+
+# Redis connection
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+spring.data.redis.password=
+spring.data.redis.database=0
+```
+
+### Application YAML
+
+```yaml
+ratelimiter:
+  enabled: true
+  redis-key-prefix: myapp:ratelimiter
+  fail-open: false
+  include-http-headers: true
+  metrics-enabled: true
+
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 
+      database: 0
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+```
+
+## Testing rate limits
+
+### Integration test example
+
+```java
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import io.github.v4runsharma.ratelimiter.exception.RateLimitExceededException;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+@SpringBootTest
+@Testcontainers
+class RateLimitIntegrationTest {
+
+  @Container
+  private static final GenericContainer<?> redis = 
+      new GenericContainer<>("redis:7-alpine")
+          .withExposedPorts(6379);
+
+  @Autowired
+  private BillingService billingService;
+
+  @Test
+  void shouldEnforceRateLimit() {
+    // First 10 requests should succeed
+    for (int i = 0; i < 10; i++) {
+      assertThat(billingService.createInvoice("account123"))
+          .isNotNull();
+    }
+
+    // 11th request should be rate limited
+    assertThrows(
+        RateLimitExceededException.class,
+        () -> billingService.createInvoice("account123")
+    );
+  }
+}
+```
