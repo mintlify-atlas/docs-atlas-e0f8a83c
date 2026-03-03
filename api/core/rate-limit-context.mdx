@@ -1,0 +1,112 @@
+---
+title: RateLimitContext
+description: Interface providing invocation context for rate limit resolution
+---
+
+## Overview
+
+The `RateLimitContext` interface provides invocation context used by the starter to resolve which policy to enforce and which key/bucket to charge. It is intentionally framework-agnostic so the same API can be used by AOP, servlet filters, reactive interceptors, etc.
+
+**Package:** `io.github.v4runsharma.ratelimiter.core`
+
+**Source:** `RateLimitContext.java:15`
+
+## Methods
+
+### getAnnotation
+
+```java
+RateLimit getAnnotation()
+```
+
+Returns the effective `@RateLimit` annotation for this invocation. Used to read declared defaults such as limit/window, name, enabled flag, etc.
+
+**Returns:** The `RateLimit` annotation
+
+**Source:** `RateLimitContext.java:21`
+
+### getTargetClass
+
+```java
+Class<?> getTargetClass()
+```
+
+Returns the target class that declares or is proxied for the invocation. Useful for composing keys, tagging metrics, and annotation lookup strategies.
+
+**Returns:** The target class
+
+**Source:** `RateLimitContext.java:27`
+
+### getMethod
+
+```java
+Method getMethod()
+```
+
+Returns the method being invoked. Useful for building keys (e.g., per-endpoint) and attaching method-level metadata.
+
+**Returns:** The invoked method
+
+**Source:** `RateLimitContext.java:33`
+
+### getArguments
+
+```java
+Object[] getArguments()
+```
+
+Returns the arguments passed to the invocation. Key resolvers can use this to pull identifiers (e.g., userId parameter).
+
+**Returns:** Array of method arguments
+
+**Source:** `RateLimitContext.java:39`
+
+### getTarget
+
+```java
+Object getTarget()
+```
+
+Returns the target object instance (may be `null` for static methods). Useful when a resolver needs instance state or to detect proxy details.
+
+**Returns:** The target object instance or null
+
+**Source:** `RateLimitContext.java:45`
+
+## Usage example
+
+Custom key resolvers use the context to extract information:
+
+```java
+import io.github.v4runsharma.ratelimiter.core.RateLimitContext;
+import io.github.v4runsharma.ratelimiter.key.RateLimitKeyResolver;
+import org.springframework.stereotype.Component;
+
+@Component
+public class UserIdKeyResolver implements RateLimitKeyResolver {
+    
+    @Override
+    public String resolveKey(RateLimitContext context) {
+        // Extract user ID from first method argument
+        Object[] args = context.getArguments();
+        if (args.length > 0 && args[0] instanceof String) {
+            String userId = (String) args[0];
+            return "user:" + userId + ":" + context.getMethod().getName();
+        }
+        
+        // Fallback to class and method name
+        return context.getTargetClass().getSimpleName() + 
+               "#" + context.getMethod().getName();
+    }
+}
+```
+
+## Implementation
+
+The default implementation `DefaultRateLimitContext` is provided by the starter and populated by the AOP aspect (`RateLimitAspect`). Users typically don't need to implement this interface directly.
+
+## Related
+
+- [RateLimitKeyResolver](/api/key/rate-limit-key-resolver) - Uses context to resolve keys
+- [RateLimitPolicyProvider](/api/core/rate-limit-policy-provider) - Uses context to resolve policies
+- [RateLimitEnforcer](/api/core/rate-limit-enforcer) - Orchestrates context-based rate limiting

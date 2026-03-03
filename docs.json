@@ -74,7 +74,8 @@
             "pages": [
               "api/core/rate-limiter",
               "api/core/rate-limit-enforcer",
-              "api/core/rate-limit-policy-provider"
+              "api/core/rate-limit-policy-provider",
+              "api/core/rate-limit-context"
             ]
           },
           {
